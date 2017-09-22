@@ -17,10 +17,11 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
+
 	"github.com/Shopify/sarama"
 	"github.com/bsm/sarama-cluster"
 	"github.com/ligato/cn-infra/logging"
-	"strings"
 )
 
 // RequiredAcks is used in Produce Requests to tell the broker how many replica acknowledgements
@@ -36,6 +37,16 @@ const (
 	WaitForLocal RequiredAcks = 1
 	// WaitForAll waits for all replicas to commit before responding.
 	WaitForAll RequiredAcks = -1
+)
+
+// Partitioner schemes
+const (
+	// Hash scheme (messages with the same key always end up on the same partition)
+	Hash = "hash"
+	// Random scheme (random partition is always used)
+	Random = "random"
+	// Manual scheme (partitions are manually set in the provided message's partition field)
+	Manual = "manual"
 )
 
 // Config struct provides the configuration for a Producer (Sync or Async) and Consumer.
@@ -230,16 +241,16 @@ func (ref *Config) SetPartitioner(val string) {
 		} else {
 			ref.Partitioner = sarama.NewHashPartitioner
 		}
-	case "hash":
+	case Hash:
 		ref.Partitioner = sarama.NewHashPartitioner
 		ref.Partition = -1
-	case "random":
+	case Random:
 		ref.Partitioner = sarama.NewRandomPartitioner
 		ref.Partition = -1
-	case "manual":
+	case Manual:
 		ref.Partitioner = sarama.NewManualPartitioner
 		if ref.Partition < 0 {
-			ref.Errorf("Invalid partition %d - defaulting to 0", ref.Partition)
+			ref.Infof("Invalid partition %d - defaulting to 0", ref.Partition)
 			ref.Partition = 0
 		}
 	}
@@ -256,10 +267,7 @@ func (ref *Config) ValidateAsyncProducerConfig() error {
 	if ref.SendError && ref.ErrorChan == nil {
 		return errors.New("error channel not specified")
 	}
-	if err := ref.ProducerConfig().Validate(); err != nil {
-		return err
-	}
-	return nil
+	return ref.ProducerConfig().Validate()
 }
 
 // ValidateSyncProducerConfig validates config for a Sync Producer
@@ -267,10 +275,7 @@ func (ref *Config) ValidateSyncProducerConfig() error {
 	if ref.Brokers == nil {
 		return errors.New("invalid Brokers - one or more brokers must be specified")
 	}
-	if err := ref.ProducerConfig().Validate(); err != nil {
-		return err
-	}
-	return nil
+	return ref.ProducerConfig().Validate()
 }
 
 // ValidateConsumerConfig validates config for Consumer
@@ -293,8 +298,5 @@ func (ref *Config) ValidateConsumerConfig() error {
 	if ref.RecvMessageChan == nil {
 		return errors.New("recvMessageChan not specified")
 	}
-	if err := ref.ConsumerConfig().Validate(); err != nil {
-		return err
-	}
-	return nil
+	return ref.ConsumerConfig().Validate()
 }

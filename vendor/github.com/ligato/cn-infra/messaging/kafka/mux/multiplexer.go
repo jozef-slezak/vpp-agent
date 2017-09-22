@@ -2,12 +2,12 @@ package mux
 
 import (
 	"fmt"
+	"sync"
+
 	"github.com/ligato/cn-infra/db/keyval"
 	"github.com/ligato/cn-infra/logging"
 	"github.com/ligato/cn-infra/messaging/kafka/client"
 	"github.com/ligato/cn-infra/utils/safeclose"
-	"sync"
-	"time"
 )
 
 // Multiplexer encapsulates clients to kafka cluster (syncProducer, asyncProducer, consumer).
@@ -24,6 +24,8 @@ type Multiplexer struct {
 	syncProducer *client.SyncProducer
 	// asyncProducer used by the Multiplexer
 	asyncProducer *client.AsyncProducer
+	// partitioner used in this multiplexer
+	partitioner string
 
 	// name is used for identification of stored last consumed offset in kafka. This allows
 	// to follow up messages after restart.
@@ -36,30 +38,50 @@ type Multiplexer struct {
 	// consume a topic. Once the multiplexer is started, new subscription can not be added.
 	started bool
 
-	// Mapping provides the mapping of subscribed consumers organized by topics(key of the first map)
-	// name of the consumer(key of the second map)
-	mapping map[string]*map[string]chan *client.ConsumerMessage
+	// Mapping provides the mapping of subscribed consumers. Subscription contains topic, partition and offset to consume,
+	// as well as dynamic/manual mode flag
+	mapping []*consumerSubscription
+	//mapping map[topicToPartition]*map[string]func(*client.ConsumerMessage)
 
 	// factory that crates consumer used in the Multiplexer
 	consumerFactory func(topics []string, groupId string) (*client.Consumer, error)
 	closeCh         chan struct{}
 }
 
+// ConsumerSubscription contains all information about subscribed kafka consumer/watcher
+type consumerSubscription struct {
+	// in manual mode, multiplexer is distributing messages according to topic, partition and offset. If manual
+	// mode is off, messages are distributed using topic only
+	manual bool
+	// topic to watch on
+	topic string
+	// partition to watch on in manual mode
+	partition int32
+	// offset to watch on in manual mode
+	offset int64
+	// name identifies the connection
+	connectionName string
+	// sends message to subscribed channel
+	byteConsMsg func(*client.ConsumerMessage)
+}
+
 // asyncMeta is auxiliary structure used by Multiplexer to distribute consumer messages
 type asyncMeta struct {
-	successChan chan *client.ProducerMessage
-	errorChan   chan *client.ProducerError
-	usersMeta   interface{}
+	successClb func(*client.ProducerMessage)
+	errorClb   func(error *client.ProducerError)
+	usersMeta  interface{}
 }
 
 // NewMultiplexer creates new instance of Kafka Multiplexer
-func NewMultiplexer(consumerFactory ConsumerFactory, syncP *client.SyncProducer, asyncP *client.AsyncProducer, name string, log logging.Logger) *Multiplexer {
+func NewMultiplexer(consumerFactory ConsumerFactory, syncP *client.SyncProducer, asyncP *client.AsyncProducer,
+	partitioner string, name string, log logging.Logger) *Multiplexer {
 	cl := &Multiplexer{consumerFactory: consumerFactory,
 		Logger:        log,
 		syncProducer:  syncP,
 		asyncProducer: asyncP,
+		partitioner:   partitioner,
 		name:          name,
-		mapping:       map[string]*map[string]chan *client.ConsumerMessage{},
+		mapping:       []*consumerSubscription{},
 		closeCh:       make(chan struct{}),
 	}
 
@@ -72,27 +94,17 @@ func (mux *Multiplexer) watchAsyncProducerChannels() {
 		select {
 		case err := <-mux.asyncProducer.Config.ErrorChan:
 			mux.Println("Failed to produce message", err.Err)
-			errMsg := err.Msg
+			errMsg := err.ProducerMessage
 
-			if errMeta, ok := errMsg.Metadata.(*asyncMeta); ok && errMeta.errorChan != nil {
-				err.Msg.Metadata = errMeta.usersMeta
-				select {
-				case errMeta.errorChan <- err:
-				default:
-					//case <-time.NewTimer(time.Second).C:
-					mux.Warn("Unable to send error notification")
-				}
+			if errMeta, ok := errMsg.Metadata.(*asyncMeta); ok && errMeta.errorClb != nil {
+				err.ProducerMessage.Metadata = errMeta.usersMeta
+				errMeta.errorClb(err)
 			}
 		case success := <-mux.asyncProducer.Config.SuccessChan:
 
-			if succMeta, ok := success.Metadata.(*asyncMeta); ok && succMeta.successChan != nil {
+			if succMeta, ok := success.Metadata.(*asyncMeta); ok && succMeta.successClb != nil {
 				success.Metadata = succMeta.usersMeta
-				select {
-				case succMeta.successChan <- success:
-				default:
-					//case <-time.NewTimer(time.Second).C:
-					mux.Warn("Unable to send success notification")
-				}
+				succMeta.successClb(success)
 			}
 		case <-mux.asyncProducer.GetCloseChannel():
 			mux.Debug("Closing watch loop for async producer")
@@ -109,7 +121,7 @@ func (mux *Multiplexer) Start() error {
 	var err error
 
 	if mux.started {
-		return fmt.Errorf("Multiplexer has been started already")
+		return fmt.Errorf("multiplexer has been started already")
 	}
 
 	// block further consumer consumers
@@ -117,8 +129,8 @@ func (mux *Multiplexer) Start() error {
 
 	var topics []string
 
-	for topic := range mux.mapping {
-		topics = append(topics, topic)
+	for _, subscription := range mux.mapping {
+		topics = append(topics, subscription.topic)
 	}
 
 	if len(topics) == 0 {
@@ -126,7 +138,7 @@ func (mux *Multiplexer) Start() error {
 		return nil
 	}
 
-	mux.WithFields(logging.Fields{"topics": topics}).Debug("Consuming started")
+	mux.WithFields(logging.Fields{"topics": topics}).Debugf("Consuming started")
 
 	mux.consumer, err = mux.consumerFactory(topics, mux.name)
 	if err != nil {
@@ -147,16 +159,24 @@ func (mux *Multiplexer) Close() {
 	safeclose.Close(mux.asyncProducer)
 }
 
-// NewConnection creates instance of the Connection that will be provide access to shared Multiplexer's clients.
-func (mux *Multiplexer) NewConnection(name string) *Connection {
-	return &Connection{multiplexer: mux, name: name}
+// NewBytesConnection creates instance of the BytesConnection that provides access to shared Multiplexer's clients.
+func (mux *Multiplexer) NewBytesConnection(name string) *BytesConnection {
+	return &BytesConnection{multiplexer: mux, name: name}
 }
 
-// NewProtoConnection creates instance of the ProtoConnection that will be provide access to shared Multiplexer's clients.
+// NewProtoConnection creates instance of the ProtoConnection that provides access to shared
+// Multiplexer's clients with hash partitioner.
 func (mux *Multiplexer) NewProtoConnection(name string, serializer keyval.Serializer) *ProtoConnection {
-	return &ProtoConnection{multiplexer: mux, serializer: serializer, name: name}
+	return &ProtoConnection{ProtoConnectionFields{multiplexer: mux, serializer: serializer, name: name}}
 }
 
+// NewProtoManualConnection creates instance of the ProtoConnectionFields that provides access to shared
+// Multiplexer's clients with manual partitioner.
+func (mux *Multiplexer) NewProtoManualConnection(name string, serializer keyval.Serializer) *ProtoManualConnection {
+	return &ProtoManualConnection{ProtoConnectionFields{multiplexer: mux, serializer: serializer, name: name}}
+}
+
+// Propagates incoming messages to respective channels.
 func (mux *Multiplexer) propagateMessage(msg *client.ConsumerMessage) {
 	mux.rwlock.RLock()
 	defer mux.rwlock.RUnlock()
@@ -164,25 +184,28 @@ func (mux *Multiplexer) propagateMessage(msg *client.ConsumerMessage) {
 	if msg == nil {
 		return
 	}
-	cons, found := mux.mapping[msg.Topic]
 
-	// notify consumers
-	if found {
-		for _, ch := range *cons {
-			// if we are not able to write into the channel we should skip the receiver
-			// and report an error to avoid deadlock
-			mux.Debug("offset ", msg.Offset, string(msg.Value), string(msg.Key), msg.Partition)
-
-			select {
-			case ch <- msg:
-			case <-time.After(time.Second):
-				mux.Error("Unable to deliver message before the timeout.")
+	// Find subscribed topics. Note: topic can be subscribed for both dynamic and manual consuming
+	for _, subscription := range mux.mapping {
+		if msg.Topic == subscription.topic {
+			// Clustered mode - message is consumed only on right partition and offset
+			if subscription.manual {
+				if msg.Partition == subscription.partition && msg.Offset >= subscription.offset {
+					mux.Debug("offset ", msg.Offset, string(msg.Value), string(msg.Key), msg.Partition)
+					subscription.byteConsMsg(msg)
+				}
+			} else {
+				// Non-manual mode
+				// if we are not able to write into the channel we should skip the receiver
+				// and report an error to avoid deadlock
+				mux.Debug("offset ", msg.Offset, string(msg.Value), string(msg.Key), msg.Partition)
+				subscription.byteConsMsg(msg)
 			}
 		}
 	}
 }
 
-// genericConsumer handles incoming messages to the multiplexer and distributes them among the subscribers
+// GenericConsumer handles incoming messages to the multiplexer and distributes them among the subscribers.
 func (mux *Multiplexer) genericConsumer() {
 	mux.Debug("Generic consumer started")
 	for {
@@ -203,18 +226,42 @@ func (mux *Multiplexer) genericConsumer() {
 
 }
 
+// Remove consumer subscription on given topic. If there is no such a subscription, return error.
 func (mux *Multiplexer) stopConsuming(topic string, name string) error {
 	mux.rwlock.Lock()
 	defer mux.rwlock.Unlock()
 
-	subs, found := mux.mapping[topic]
-	if !found {
-		return fmt.Errorf("Topic %s was not consumed by '%s'", topic, name)
+	var wasError error
+	var topicFound bool
+	for index, subs := range mux.mapping {
+		if !subs.manual && subs.topic == topic && subs.connectionName == name {
+			topicFound = true
+			mux.mapping = append(mux.mapping[:index], mux.mapping[index+1:]...)
+		}
 	}
-	_, found = (*subs)[name]
-	if !found {
-		return fmt.Errorf("Topic %s was not consumed by '%s'", topic, name)
+	if !topicFound {
+		wasError = fmt.Errorf("topic %s was not consumed by '%s'", topic, name)
 	}
-	delete(*subs, name)
-	return nil
+	return wasError
+}
+
+// Remove consumer subscription on given topic, partition and initial offset. If there is no such a subscription
+// (all fields must match), return error.
+func (mux *Multiplexer) stopConsumingPartition(topic string, partition int32, offset int64, name string) error {
+	mux.rwlock.Lock()
+	defer mux.rwlock.Unlock()
+
+	var wasError error
+	var topicFound bool
+	for index, subs := range mux.mapping {
+		if subs.manual && subs.topic == topic && subs.partition == partition && subs.offset == offset && subs.connectionName == name {
+			topicFound = true
+			mux.mapping = append(mux.mapping[:index], mux.mapping[index+1:]...)
+		}
+	}
+	if !topicFound {
+		wasError = fmt.Errorf("topic %s, partition %v and offset %v was not consumed by '%s'",
+			topic, partition, offset, name)
+	}
+	return wasError
 }

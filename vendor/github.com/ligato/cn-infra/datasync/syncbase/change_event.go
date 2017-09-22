@@ -17,22 +17,21 @@ package syncbase
 import (
 	"github.com/golang/protobuf/proto"
 	"github.com/ligato/cn-infra/datasync"
-	"github.com/ligato/cn-infra/db"
-	log "github.com/ligato/cn-infra/logging/logrus"
+	"github.com/ligato/cn-infra/logging/logroot"
 )
 
 // ChangeEvent is a simple structure that implements interface datasync.ChangeEvent
 type ChangeEvent struct {
 	Key        string
-	ChangeType db.PutDel
+	ChangeType datasync.PutDel
 	CurrVal    datasync.LazyValue
 	CurrRev    int64
 	PrevVal    datasync.LazyValue
 	delegate   datasync.CallbackResult
 }
 
-// GetChangeType is just a getter...
-func (ev *ChangeEvent) GetChangeType() db.PutDel {
+// GetChangeType returns type of the event.
+func (ev *ChangeEvent) GetChangeType() datasync.PutDel {
 	return ev.ChangeType
 }
 
@@ -64,6 +63,6 @@ func (ev *ChangeEvent) Done(err error) {
 	if ev.delegate != nil {
 		ev.delegate.Done(err)
 	} else if err != nil {
-		log.Error(err)
+		logroot.StandardLogger().Error(err)
 	}
 }

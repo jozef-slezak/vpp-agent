@@ -12,56 +12,59 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package linuxplugin implements the Linux plugin that handles management
+// of Linux VETH interfaces.
 package linuxplugin
 
 import (
 	"context"
 	"sync"
 
+	"github.com/ligato/cn-infra/core"
 	log "github.com/ligato/cn-infra/logging/logrus"
 	"github.com/ligato/cn-infra/utils/safeclose"
 
 	"github.com/ligato/cn-infra/datasync"
 	"github.com/ligato/cn-infra/logging/logroot"
-	"github.com/ligato/vpp-agent/idxvpp"
 	"github.com/ligato/vpp-agent/idxvpp/nametoidx"
+	"github.com/ligato/vpp-agent/plugins/linuxplugin/ifaceidx"
 )
+
+// PluginID used in the Agent Core flavors
+const PluginID core.PluginName = "linuxplugin"
 
 // Plugin implements Plugin interface, therefore it can be loaded with other plugins
 type Plugin struct {
-	transport datasync.TransportAdapter
-	ifIndexes idxvpp.NameToIdxRW
+	Deps
 
+	ifIndexes      ifaceidx.LinuxIfIndexRW
 	ifConfigurator *LinuxInterfaceConfigurator
 
 	resyncChan chan datasync.ResyncEvent
 	changeChan chan datasync.ChangeEvent // TODO dedicated type abstracted from ETCD
 
-	watchDataReg datasync.WatchDataRegistration
+	watchDataReg datasync.WatchRegistration
 
 	cancel context.CancelFunc // cancel can be used to cancel all goroutines and their jobs inside of the plugin
 	wg     sync.WaitGroup     // wait group that allows to wait until all goroutines of the plugin have finished
 }
 
-var (
-	// gPlugin holds the global instance of the Plugin
-	gPlugin *Plugin
-)
+// Deps is here to group injected dependencies of plugin
+// to not mix with other plugin fields.
+type Deps struct {
+	Watcher datasync.KeyValProtoWatcher // injected
+}
 
-// plugin function is used in api to access the plugin instance. It panics if the plugin instance is not initialized.
-func plugin() *Plugin {
-	if gPlugin == nil {
-		log.Panic("Trying to access the Linux Interface Plugin but it is still not initialized")
-	}
-	return gPlugin
+// GetLinuxIfIndexes gives access to mapping of logical names (used in ETCD configuration) to corresponding Linux
+// interface indexes. This mapping is especially helpful for plugins that need to watch for newly added or deleted
+// Linux interfaces.
+func (plugin *Plugin) GetLinuxIfIndexes() ifaceidx.LinuxIfIndex {
+	return plugin.ifIndexes
 }
 
 // Init gets handlers for ETCD, Kafka and delegates them to ifConfigurator
 func (plugin *Plugin) Init() error {
-	var err error
-	plugin.transport = datasync.GetTransport()
-
-	log.Debug("Initializing Linux interface plugin")
+	log.DefaultLogger().Debug("Initializing Linux interface plugin")
 
 	plugin.resyncChan = make(chan datasync.ResyncEvent)
 	plugin.changeChan = make(chan datasync.ChangeEvent)
@@ -74,19 +77,18 @@ func (plugin *Plugin) Init() error {
 	go plugin.watchEvents(ctx)
 
 	// Interface indexes
-	plugin.ifIndexes = nametoidx.NewNameToIdx(logroot.Logger(), PluginID, "linux_if_indexes", nil)
+	plugin.ifIndexes = ifaceidx.NewLinuxIfIndex(nametoidx.NewNameToIdx(logroot.StandardLogger(), PluginID,
+		"linux_if_indexes", nil))
 
 	// Linux interface configurator
 	plugin.ifConfigurator = &LinuxInterfaceConfigurator{}
 	plugin.ifConfigurator.Init(plugin.ifIndexes)
 
-	err = plugin.subscribeWatcher()
-	if err != nil {
-		return err
-	}
+	return plugin.subscribeWatcher()
+}
 
-	gPlugin = plugin
-
+// AfterInit runs subscribeWatcher
+func (plugin *Plugin) AfterInit() error {
 	return nil
 }
 

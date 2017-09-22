@@ -19,10 +19,10 @@ import (
 	govppapi "git.fd.io/govpp.git/api"
 	log "github.com/ligato/cn-infra/logging/logrus"
 	"github.com/ligato/cn-infra/utils/addrs"
+	"github.com/ligato/vpp-agent/idxvpp"
 	bfd_api "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/bin_api/bfd"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/ifaceidx"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/bfd"
-	"github.com/ligato/vpp-agent/idxvpp"
 	"net"
 )
 
@@ -66,14 +66,14 @@ func AddBfdUDPSession(bfdSession *bfd.SingleHopBFD_Session, swIfIndexes ifaceidx
 	// Authentication
 	if bfdSession.Authentication != nil {
 		keyID := string(bfdSession.Authentication.KeyId)
-		log.Infof("Setting up authentication with index %v", keyID)
+		log.DefaultLogger().Infof("Setting up authentication with index %v", keyID)
 		_, _, found := bfdKeyIndexes.LookupIdx(keyID)
 		if found {
 			req.IsAuthenticated = 1
 			req.BfdKeyID = uint8(bfdSession.Authentication.KeyId)
 			req.ConfKeyID = bfdSession.Authentication.AdvertisedKeyId
 		} else {
-			log.Infof("Authentication key %v not found", bfdSession.Authentication.KeyId)
+			log.DefaultLogger().Infof("Authentication key %v not found", bfdSession.Authentication.KeyId)
 			req.IsAuthenticated = 0
 		}
 	} else {
@@ -108,14 +108,14 @@ func AddBfdUDPSessionFromDetails(bfdSession *bfd_api.BfdUDPSessionDetails, bfdKe
 	// Authentication
 	if bfdSession.IsAuthenticated != 0 {
 		keyID := string(bfdSession.BfdKeyID)
-		log.Infof("Setting up authentication with index %v", keyID)
+		log.DefaultLogger().Infof("Setting up authentication with index %v", keyID)
 		_, _, found := bfdKeyIndexes.LookupIdx(keyID)
 		if found {
 			req.IsAuthenticated = 1
 			req.BfdKeyID = bfdSession.BfdKeyID
 			req.ConfKeyID = bfdSession.ConfKeyID
 		} else {
-			log.Infof("Authentication key %v not found", bfdSession.BfdKeyID)
+			log.DefaultLogger().Infof("Authentication key %v not found", bfdSession.BfdKeyID)
 			req.IsAuthenticated = 0
 		}
 	} else {
@@ -218,7 +218,7 @@ func DumpBfdUDPSessionsWithID(authKeyIndex uint32, swIfIndexes ifaceidx.SwIfInde
 			break
 		}
 		if err != nil {
-			log.Error(err)
+			log.DefaultLogger().Error(err)
 			return sessionIfacesWithID, err
 		}
 		// Not interested in sessions without auth key
@@ -252,7 +252,7 @@ func SetBfdUDPAuthenticationKey(bfdKey *bfd.SingleHopBFD_Key, vppChannel *govppa
 	} else if bfdKey.AuthenticationType == 1 {
 		authentication = 5 // Meticulous keyed SHA1
 	} else {
-		log.Warnf("Provided authentication type not supported, setting up SHA1")
+		log.DefaultLogger().Warnf("Provided authentication type not supported, setting up SHA1")
 		authentication = 4
 	}
 

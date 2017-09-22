@@ -22,7 +22,8 @@ import (
 	"time"
 
 	"bytes"
-	"github.com/ligato/cn-infra/statuscheck/model/status"
+
+	"github.com/ligato/cn-infra/health/statuscheck/model/status"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 	"github.com/logrusorgru/aurora.git"
 )
@@ -112,9 +113,9 @@ func (ed EtcdDump) PrintDataAsText(showEtcd bool, printAsTree bool) (*bytes.Buff
 
 			// Interface overall status
 			"{{with .State}}{{with .InterfaceState}} ({{.InternalName}}, ifIdx {{.IfIndex}}){{end}}{{end}}:\n{{pfx 3}}Status: <" +
-			"{{with .Config}}{{with .Interface}}{{isEnabled .Enabled}}{{end}}" +
+			"{{with .Config}}{{with .Interface}}{{isEnabled .Enabled}}{{end}}, " +
 			// 'with .Config' else
-			"{{else}}{{setRed \"NOT-IN-CONFIG\"}}{{end}}" +
+			"{{else}}{{setRed \"NOT-IN-CONFIG\"}}{{end}}, " +
 			"{{with .State}}{{with .InterfaceState}}{{setStsColor \"ADMIN\" .AdminStatus}}, {{setStsColor \"OPER\" .OperStatus}}{{end}}" +
 			// 'with .State' else
 			"{{else}}, {{setRed \"NOT-IN-VPP\"}}{{end}}>" +
@@ -170,7 +171,7 @@ func (ed EtcdDump) PrintDataAsText(showEtcd bool, printAsTree bool) (*bytes.Buff
 			"{{end}}{{end}}" +
 
 			// Iterate over interfaces - end of loop
-			"{{end}}{{end}}\n")
+			"{{end}}{{end}}")
 	if err != nil {
 		panic(err)
 	}
@@ -237,7 +238,7 @@ func (ed EtcdDump) PrintDataAsText(showEtcd bool, printAsTree bool) (*bytes.Buff
 			"\n{{pfx 5}}{{setBold $iface.Name}} shg: {{$iface.SplitHorizonGroup}}" +
 			// Iterate over BD status interfaces - end of loop
 			"{{end}}{{end}}" +
-			"\n{{pfx 4}}BVI: {{.BviInterface}}" +
+			"\n{{pfx 4}}BVI: <{{.BviInterface}}>" +
 			// Out of '.Status"
 			"{{end}}{{end}}" +
 

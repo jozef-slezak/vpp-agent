@@ -16,6 +16,7 @@ package impl
 
 import (
 	"errors"
+
 	"github.com/ligato/vpp-agent/cmd/agentctl/utils"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/l2plugin/model/l2"
 	"github.com/spf13/cobra"
@@ -206,7 +207,7 @@ func AddFibEntry(endpoints []string, label string, fib *L2FIBEntryFields) {
 		utils.ExitWithError(utils.ExitInvalidInput, errors.New("Fib entry configured for a nonexisting bridge domain"))
 	}
 	// If FIB with the same MAC address exists, remove it first
-	found, key, _ := utils.GetFibEntry(endpoints, label, fib.PhysAddress)
+	found, key, _ := utils.GetFibEntry(endpoints, label, fib.BdName, fib.PhysAddress)
 	if found {
 		utils.DeleteFibDataFromDb(db, key)
 	}
@@ -232,7 +233,7 @@ func DelFibEntry(endpoints []string, label string, fib *L2FIBEntryFields) {
 	if err != nil {
 		utils.ExitWithError(utils.ExitBadConnection, err)
 	}
-	_, key, _ := utils.GetFibEntry(endpoints, label, fib.PhysAddress)
+	_, key, _ := utils.GetFibEntry(endpoints, label, fib.BdName, fib.PhysAddress)
 	utils.DeleteFibDataFromDb(db, key)
 }
 

@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
         # general tools
         iproute2 iputils-ping inetutils-traceroute \
         # vpp requirements
-        openssl python libapr1 \
+        openssl python libapr1 libnuma1 \
         supervisor
 
 # use /opt/vpp-agent/dev as the working directory
@@ -31,6 +31,7 @@ RUN rm -rf vpp/ && rm -rf agent/
 COPY supervisord.conf /etc/supervisord.conf
 COPY etcd.conf .
 COPY kafka.conf .
+COPY govpp.conf .
 COPY vpp.conf /etc/vpp/vpp.conf
 
 WORKDIR /root/

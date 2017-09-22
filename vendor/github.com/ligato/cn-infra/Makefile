@@ -32,9 +32,10 @@ define test_cover_only
 	@go test -covermode=count -coverprofile=${COVER_DIR}coverage_unit7.out ./db/keyval/redis
 	@go test -covermode=count -coverprofile=${COVER_DIR}coverage_unit8.out ./db/sql/cassandra
 	@go test -covermode=count -coverprofile=${COVER_DIR}coverage_unit9.out ./idxmap/mem
+	@go test -covermode=count -coverprofile=${COVER_DIR}coverage_unit10.out ./tests/go/itest
     @echo "# merging coverage results"
     @cd vendor/github.com/wadey/gocovmerge && go install -v
-    @gocovmerge ${COVER_DIR}coverage_unit1.out ${COVER_DIR}coverage_unit2.out ${COVER_DIR}coverage_unit3.out ${COVER_DIR}coverage_unit4.out ${COVER_DIR}coverage_unit5.out ${COVER_DIR}coverage_unit6.out ${COVER_DIR}coverage_unit7.out  ${COVER_DIR}coverage_unit8.out ${COVER_DIR}coverage_unit9.out > ${COVER_DIR}coverage.out
+    @gocovmerge ${COVER_DIR}coverage_unit1.out ${COVER_DIR}coverage_unit2.out ${COVER_DIR}coverage_unit3.out ${COVER_DIR}coverage_unit4.out ${COVER_DIR}coverage_unit5.out ${COVER_DIR}coverage_unit6.out ${COVER_DIR}coverage_unit7.out  ${COVER_DIR}coverage_unit8.out ${COVER_DIR}coverage_unit9.out ${COVER_DIR}coverage_unit10.out > ${COVER_DIR}coverage.out
     @echo "# coverage data generated into ${COVER_DIR}coverage.out"
     @echo "# done"
 endef
@@ -62,13 +63,23 @@ define lint_only
     @echo "# done"
 endef
 
+# verify that links in markdown files are valid
+# requires npm install -g markdown-link-check
+define check_links_only
+    @echo "# checking links"
+    @./scripts/check_links.sh
+    @echo "# done"
+endef
+
 # build plugin example only
 define build_plugin_examples_only
     @echo "# building plugin examples"
-    @cd examples/etcd && go build -v ${LDFLAGS}
-    @cd examples/flags && go build -v ${LDFLAGS}
-    @cd examples/kafka && go build -v ${LDFLAGS}
-    @cd examples/logs && go build -v ${LDFLAGS}
+    @cd examples/configs-plugin && go build -v ${LDFLAGS}
+    @cd examples/datasync-plugin && go build -v ${LDFLAGS}
+    @cd examples/flags-lib && go build -v ${LDFLAGS}
+    @cd examples/kafka-plugin/manual-partitioner && go build -v ${LDFLAGS}
+    @cd examples/kafka-plugin/hash-partitioner && go build -v ${LDFLAGS}
+    @cd examples/logs-plugin && go build -v ${LDFLAGS}
     @cd examples/simple-agent && go build -v ${LDFLAGS}
     @echo "# done"
 endef
@@ -77,22 +88,22 @@ endef
 # build examples only
 define build_examples_only
     @echo "# building examples"
-    @cd db/keyval/etcdv3/examples && make build
-    @cd db/keyval/redis/examples && make build
-    @cd db/sql/cassandra/examples/simple && go build
-    @cd logging/logrus/examples && make build
-    @cd messaging/kafka/examples && make build
+    @cd examples/cassandra-lib && go build
+    @cd examples/etcdv3-lib && make build
+    @cd examples/kafka-lib && make build
+    @cd examples/logs-lib && make build
+    @cd examples/redis-lib && make build
     @echo "# done"
 endef
 
 # clean examples only
 define clean_examples_only
     @echo "# cleaning examples"
-    @cd db/keyval/etcdv3/examples && make clean
-    @cd db/keyval/redis/examples && make clean
-    @cd db/sql/cassandra/examples/simple && rm -f simple
-    @cd logging/logrus/examples && make clean
-    @cd messaging/kafka/examples && make clean
+    @cd examples/cassandra-lib && rm -f simple
+    @cd examples/etcdv3-lib && make clean
+    @cd examples/kafka-lib && make clean
+    @cd examples/logs-lib && make clean
+    @cd examples/redis-lib && make clean
     @echo "# done"
 endef
 
@@ -100,10 +111,26 @@ endef
 define clean_plugin_examples_only
     @echo "# cleaning plugin examples"
     @rm -f examples/simple-agent/simple-agent
-    @rm -f examples/etcd/etcd
-    @rm -f examples/flags/flags
-    @rm -f examples/kafka/kafka
-    @rm -f examples/logs/logs
+    @rm -f examples/configs-plugin/configs-plugin
+    @rm -f examples/datasync-plugin/datasync-plugin
+    @rm -f examples/flags-lib/flags-lib
+    @rm -f examples/kafka-plugin/manual-partitioner/manual-partitioner
+    @rm -f examples/kafka-plugin/hash-partitioner/hash-partitioner
+    @rm -f examples/logs-plugin/logs-plugin
+    @echo "# done"
+endef
+
+# run code formatter
+define format_only
+    @echo "# formatting the code"
+    @./scripts/gofmt.sh
+    @echo "# done"
+endef
+
+# run test examples
+define test_examples
+    @echo "# Testing examples"
+    @./scripts/test_examples.sh
     @echo "# done"
 endef
 
@@ -124,6 +151,10 @@ update-dep:
 test:
 	$(call test_only)
 
+# run smoke tests on examples
+test-examples:
+	$(call test_examples)
+
 # run tests with coverage report
 test-cover:
 	$(call test_cover_only)
@@ -140,6 +171,14 @@ test-cover-xml:
 lint:
 	$(call lint_only)
 
+# validate links in markdown files
+check_links:
+	$(call check_links_only)
+
+# format the code
+format:
+	$(call format_only)
+
 
 # clean
 clean:
@@ -152,4 +191,4 @@ all:
 	$(call test_only)
 	$(call install_only)
 
-.PHONY: build update-dep install-dep test lint clean
+.PHONY: build update-dep install-dep test lint check_links clean

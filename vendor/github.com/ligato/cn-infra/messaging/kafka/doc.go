@@ -13,21 +13,33 @@
 // limitations under the License.
 
 /*
-Package kafka provides the capability for a user to send and receive messages via Kafka.
-It provides sync and async Producers for sending Kafka messages and a Consumer for retrieving Kafka messages.
+Package kafka implements a client for the Kafka broker. The client supports
+sending and receiving of messages through the Kafka message bus. It provides
+both sync and async Producers for sending Kafka messages and a Consumer for
+retrieving Kafka messages.
 
-A Producer sends messages to Kafka. Two types of producers are available synchronous and asynchronous. Request to
-send a message using synchronous producer blocks until the message is published or an error is returned. On the contrary
-request sent using asynchronous producer returns immediately and the success or failure is announced through provided channels.
-A Consumer receives messages from Kafka for one or more topics. When a consumer is initiated it automatically
-balances/shares the total number partitions for a message topic over all the active brokers for a topic. Message offsets can,
-optionally, be committed to Kafka so that when a consumer is restarted or a new consumer is initiated it knows where
-to begin reading messages from the Kafka message log.
-The package also provides a Multiplexer that allows to share consumer and producers instances among multiple entities called Connections.
-Apart from reusing the access to kafka brokers, the Multiplexer marks offset of consumed message as read.
-Offset marking allows to consume messages from the last committed offset after restart of Multiplexer.
-Note: Marking offset does not necessarily commit the offset to the backend store immediately. This might result in a corner case
-where a messages might be delivered multiple times.
+A Producer sends messages to Kafka. A Producer can be either synchronous
+or asynchronous. Request to send a message using a synchronous producer
+blocks until the message is published or an error is returned. A request
+sent using asynchronous producer returns immediately and the success or
+failure is communicated to the sender through a separate status channels.
+
+A Consumer receives messages from Kafka for one or more topics. When a
+consumer is initialized,it automatically balances/shares the total number
+partitions for a message topic over all the active brokers for a topic.
+Message offsets can optionally be committed to Kafka so that when a consumer
+is restarted or a new consumer is initiated it knows where to begin reading
+messages from the Kafka message log.
+
+The package also provides a Multiplexer that allows to share consumer and
+producers instances among multiple entities called Connections. Apart from
+reusing the access to kafka brokers, the Multiplexer marks the offset of
+consumed message as read. Offset marking allows to consume messages from the
+last committed offset after the restart of the Multiplexer.
+
+Note: Marking offset does not necessarily commit the offset to the backend
+store immediately. This might result in a corner case where a message might
+be delivered multiple times.
 
 Usage of synchronous producer:
 	// create minimal configuration
@@ -135,7 +147,11 @@ The config file specifies addresses of kafka brokers:
 
 To create a Connection that reuses Multiplexer access to kafka run:
 
-	cn := mx.NewConnection("c1")
+	cn := mx.NewBytesConnection("c1")
+
+	or
+
+	cn := mx.NewProtoConnection("c1")
 
 Afterwards you can produce messages using sync API:
 
@@ -184,5 +200,22 @@ to actually initialize the consumer inside the Multiplexer.
 To properly clean up the Multiplexer call:
 
         mx.Close()
+
+
+The KAFKA plugin
+
+Once kafka plugin is initialized
+        plugin := kafka.Plugin{}
+        // Init called by agent core
+
+The plugin allows to create connections:
+
+        conn := plugin.NewConnection("name")
+
+or connection that support proto-modelled messages:
+
+        protoConn := plugin.NewProtoConnection("protoConnection")
+The usage of connections is described above.
+
 */
 package kafka

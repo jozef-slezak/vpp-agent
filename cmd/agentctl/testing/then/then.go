@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package then contains methods for verification of agentctl unit test outcomes.
 package then
 
 import (
-	"github.com/onsi/gomega"
 	"strings"
+
+	"github.com/onsi/gomega"
 )
 
 // ContainsItems can be used to verify if the provided item(s) is present in the table. It could be an agent label, an interface or

@@ -25,9 +25,9 @@ import (
 	"time"
 
 	"github.com/fsouza/go-dockerclient"
+	"github.com/vishvananda/netlink"
 
 	log "github.com/ligato/cn-infra/logging/logrus"
-	"github.com/ligato/vpp-agent/idxvpp"
 	"github.com/ligato/vpp-agent/plugins/linuxplugin/linuxcalls"
 	intf "github.com/ligato/vpp-agent/plugins/linuxplugin/model/interfaces"
 
@@ -35,6 +35,7 @@ import (
 
 	"github.com/ligato/cn-infra/servicelabel"
 	"github.com/ligato/cn-infra/utils/addrs"
+	"github.com/ligato/vpp-agent/plugins/linuxplugin/ifaceidx"
 )
 
 /* how often in seconds to refresh the microservice label -> docker container PID map */
@@ -71,7 +72,7 @@ type LinuxInterfaceConfigurator struct {
 	cfgLock sync.Mutex
 
 	/* logical interface name -> Linux interface index (both managed and unmanaged interfaces) */
-	ifIndexes idxvpp.NameToIdxRW
+	ifIndexes ifaceidx.LinuxIfIndexRW
 
 	/* interface caches (managed interfaces only) */
 	intfByName          map[string]*LinuxInterfaceConfig   /* interface name -> interface configuration */
@@ -85,13 +86,19 @@ type LinuxInterfaceConfigurator struct {
 	dockerClient *docker.Client
 
 	/* management of go routines */
+	ctx    context.Context    // Context within which all goroutines are running
 	cancel context.CancelFunc // cancel can be used to cancel all goroutines and their jobs inside of the plugin
 	wg     sync.WaitGroup     // wait group that allows to wait until all goroutines of the plugin have finished
+
+	/* state data (TBD: will be moved to LinuxInterfaceStateUpdater) */
+	ifWatcherRunning bool
+	ifWatcherNotifCh chan netlink.LinkUpdate
+	ifWatcherDoneCh  chan struct{}
 }
 
 // Init linuxplugin and start go routines
-func (plugin *LinuxInterfaceConfigurator) Init(ifIndexes idxvpp.NameToIdxRW) error {
-	log.Debug("Initializing LinuxInterfaceConfigurator")
+func (plugin *LinuxInterfaceConfigurator) Init(ifIndexes ifaceidx.LinuxIfIndexRW) error {
+	log.DefaultLogger().Debug("Initializing LinuxInterfaceConfigurator")
 	plugin.ifIndexes = ifIndexes
 
 	// allocate caches
@@ -103,13 +110,14 @@ func (plugin *LinuxInterfaceConfigurator) Init(ifIndexes idxvpp.NameToIdxRW) err
 	var err error
 	plugin.dockerClient, err = docker.NewClientFromEnv()
 	if err != nil || plugin.dockerClient == nil {
-		log.Warn("Failed to connect with the docker daemon. Will keep re-connecting in the background.")
+		log.DefaultLogger().Warn("Failed to connect with the docker daemon. Will keep re-connecting in the background.")
 	}
 
-	var ctx context.Context
-	ctx, plugin.cancel = context.WithCancel(context.Background())
-	go plugin.trackMicroservices(ctx)
+	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
+	go plugin.trackMicroservices(plugin.ctx)
 
+	plugin.ifWatcherNotifCh = make(chan netlink.LinkUpdate, 10)
+	plugin.ifWatcherDoneCh = make(chan struct{})
 	return nil
 }
 
@@ -124,15 +132,9 @@ func (plugin *LinuxInterfaceConfigurator) Close() error {
 // Resync configures an initial set of interfaces. Existing Linux interfaces are registered and potentially re-configured.
 func (plugin *LinuxInterfaceConfigurator) Resync(interfaces []*intf.LinuxInterfaces_Interface) error {
 	var wasError error
-	log.WithField("cfg", plugin).Debug("RESYNC Interface begin.")
+	log.DefaultLogger().WithField("cfg", plugin).Debug("RESYNC Interface begin.")
 
-	// Step 1: Dump actual state of the Linux network stack (subset of it)
-	err := plugin.LookupLinuxInterfaces(nil)
-	if err != nil {
-		return err
-	}
-
-	// Step 2: Create missing Linux interfaces and recreate existing ones
+	// Step 1: Create missing Linux interfaces and recreate existing ones
 	for _, iface := range interfaces {
 		err := plugin.ConfigureLinuxInterface(iface)
 		if err != nil {
@@ -140,14 +142,26 @@ func (plugin *LinuxInterfaceConfigurator) Resync(interfaces []*intf.LinuxInterfa
 		}
 	}
 
-	log.WithField("cfg", plugin).Debug("RESYNC Interface end. ", wasError)
+	// Step 2: Dump pre-existing and currently not managed interfaces in the current namespace.
+	err := plugin.LookupLinuxInterfaces()
+	if err != nil {
+		return err
+	}
+
+	log.DefaultLogger().WithField("cfg", plugin).Debug("RESYNC Interface end. ", wasError)
 
 	return wasError
 }
 
-// LookupLinuxInterfaces looks up all Linux interfaces in the current namespace and registers them into the name-to-index
-// mapping.
-func (plugin *LinuxInterfaceConfigurator) LookupLinuxInterfaces(ns *intf.LinuxInterfaces_Interface_Namespace) error {
+// LookupLinuxInterfaces looks up all currently unmanaged Linux interfaces in the current namespace and registers them into
+// the name-to-index mapping. Furthermore, it triggers goroutine that will watch for newly added interfaces (by another party)
+// unless it is already running.
+func (plugin *LinuxInterfaceConfigurator) LookupLinuxInterfaces() error {
+	plugin.startIfWatcher()
+
+	plugin.cfgLock.Lock()
+	defer plugin.cfgLock.Unlock()
+
 	intfs, err := net.Interfaces()
 	if err != nil {
 		return err
@@ -157,16 +171,12 @@ func (plugin *LinuxInterfaceConfigurator) LookupLinuxInterfaces(ns *intf.LinuxIn
 		if idx < 0 {
 			continue
 		}
-		ifType, err := linuxcalls.GetInterfaceType(intf.Name)
-		if err != nil {
+		_, _, known := plugin.ifIndexes.LookupIdx(intf.Name)
+		if known {
 			continue
 		}
-		if ns != nil && ifType != "veth" {
-			/* skip non-VETH interfaces from other namespaces */
-			continue
-		}
-		log.WithFields(log.Fields{"name": intf.Name, "idx": idx}).Debug("Found new Linux interface")
-		plugin.ifIndexes.RegisterName(intf.Name, uint32(idx), ns)
+		log.DefaultLogger().WithFields(log.Fields{"name": intf.Name, "idx": idx}).Debug("Found new Linux interface")
+		plugin.ifIndexes.RegisterName(intf.Name, uint32(idx), nil)
 	}
 	return nil
 }
@@ -174,7 +184,7 @@ func (plugin *LinuxInterfaceConfigurator) LookupLinuxInterfaces(ns *intf.LinuxIn
 // ConfigureLinuxInterface reacts to a new northbound Linux interface config by creating and configuring
 // the interface in the host network stack through Netlink API.
 func (plugin *LinuxInterfaceConfigurator) ConfigureLinuxInterface(iface *intf.LinuxInterfaces_Interface) error {
-	log.Println("Configuring Linux interface", iface.Name)
+	log.DefaultLogger().Println("Configuring Linux interface", iface.Name)
 	var err error
 
 	if iface.Type != intf.LinuxInterfaces_VETH {
@@ -193,7 +203,7 @@ func (plugin *LinuxInterfaceConfigurator) ConfigureLinuxInterface(iface *intf.Li
 
 	// create only after both ends are configured and target namespaces are available
 	if !plugin.isNamespaceAvailable(iface.Namespace) || peer == nil || !plugin.isNamespaceAvailable(peer.config.Namespace) {
-		log.WithField("ifName", iface.Name).Debug("VETH interface is not ready to be configured")
+		log.DefaultLogger().WithField("ifName", iface.Name).Debug("VETH interface is not ready to be configured")
 		return nil
 	}
 
@@ -250,7 +260,7 @@ func (plugin *LinuxInterfaceConfigurator) configureLinuxInterface(nsMgmtCtx *lin
 
 	// configure optional mac address
 	if iface.config.PhysAddress != "" {
-		log.WithFields(log.Fields{"PhysAddress": iface.config.PhysAddress, "ifName": iface.config.Name}).Debug("MAC address configured.")
+		log.DefaultLogger().WithFields(log.Fields{"PhysAddress": iface.config.PhysAddress, "ifName": iface.config.Name}).Debug("MAC address configured.")
 		err := linuxcalls.SetInterfaceMac(iface.config.Name, iface.config.PhysAddress)
 		if err != nil {
 			wasError = fmt.Errorf("failed to assign physical address to Linux interface: %v", err)
@@ -263,7 +273,7 @@ func (plugin *LinuxInterfaceConfigurator) configureLinuxInterface(nsMgmtCtx *lin
 		return err
 	}
 	for i := range newAddrs {
-		log.WithFields(log.Fields{"IPaddress": newAddrs[i], "ifName": iface.config.Name}).Debug("IP address added.")
+		log.DefaultLogger().WithFields(log.Fields{"IPaddress": newAddrs[i], "ifName": iface.config.Name}).Debug("IP address added.")
 		err := linuxcalls.AddInterfaceIP(iface.config.Name, newAddrs[i])
 		if nil != err {
 			wasError = fmt.Errorf("failed to assign IPv4 address to Linux interface: %v", err)
@@ -273,15 +283,15 @@ func (plugin *LinuxInterfaceConfigurator) configureLinuxInterface(nsMgmtCtx *lin
 	// configure MTU
 	mtu := iface.config.Mtu
 	if mtu > 0 {
-		log.WithFields(log.Fields{"MTU": mtu, "ifName": iface.config.Name}).Debug("MTU configured.")
+		log.DefaultLogger().WithFields(log.Fields{"MTU": mtu, "ifName": iface.config.Name}).Debug("MTU configured.")
 		err := linuxcalls.SetInterfaceMTU(iface.config.Name, int(mtu))
 		if nil != err {
 			wasError = fmt.Errorf("failed to set MTU of a Linux interface: %v", err)
 		}
 	}
 
-	plugin.ifIndexes.RegisterName(iface.config.Name, uint32(idx), iface.config.Namespace)
-	log.WithFields(log.Fields{"ifName": iface.config.Name, "ifIdx": idx}).Debug("An entry added into ifState.")
+	plugin.ifIndexes.RegisterName(iface.config.Name, uint32(idx), nil)
+	log.DefaultLogger().WithFields(log.Fields{"ifName": iface.config.Name, "ifIdx": idx}).Debug("An entry added into ifState.")
 
 	return wasError
 }
@@ -291,7 +301,7 @@ func (plugin *LinuxInterfaceConfigurator) configureLinuxInterface(nsMgmtCtx *lin
 func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.LinuxInterfaces_Interface,
 	oldConfig *intf.LinuxInterfaces_Interface) error {
 
-	log.Println("'Modifying' Linux interface", newConfig.Name)
+	log.DefaultLogger().Println("'Modifying' Linux interface", newConfig.Name)
 	var err error
 	var ifName = newConfig.Name
 
@@ -326,7 +336,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 
 	if !plugin.isNamespaceAvailable(newConfig.Namespace) || peer == nil || !plugin.isNamespaceAvailable(peer.config.Namespace) {
 		// interface doesn't actually exist physically
-		log.WithField("ifName", ifName).Debug("VETH interface is not ready to be re-configured")
+		log.DefaultLogger().WithField("ifName", ifName).Debug("VETH interface is not ready to be re-configured")
 		return nil
 	}
 
@@ -341,7 +351,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 	// verify that the interface exists in the Linux namespace
 	idx := GetLinuxInterfaceIndex(ifName)
 	if idx < 0 {
-		log.WithFields(log.Fields{"ifName": ifName}).Debug("Linux interface not found.")
+		log.DefaultLogger().WithFields(log.Fields{"ifName": ifName}).Debug("Linux interface not found.")
 		return nil
 	}
 
@@ -361,7 +371,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 
 	// configure new mac address if set
 	if newConfig.PhysAddress != "" && newConfig.PhysAddress != oldConfig.PhysAddress {
-		log.WithFields(log.Fields{"PhysAddress": newConfig.PhysAddress, "ifName": ifName}).Debug("MAC address re-configured.")
+		log.DefaultLogger().WithFields(log.Fields{"PhysAddress": newConfig.PhysAddress, "ifName": ifName}).Debug("MAC address re-configured.")
 		err := linuxcalls.SetInterfaceMac(ifName, newConfig.PhysAddress)
 		if err != nil {
 			wasError = fmt.Errorf("failed to assign physical address to a Linux interface: %v", err)
@@ -382,7 +392,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 	del, add = addrs.DiffAddr(newAddrs, oldAddrs)
 
 	for i := range del {
-		log.WithFields(log.Fields{"IPaddress": del[i], "ifName": ifName}).Debug("IP address deleted.")
+		log.DefaultLogger().WithFields(log.Fields{"IPaddress": del[i], "ifName": ifName}).Debug("IP address deleted.")
 		err := linuxcalls.DelInterfaceIP(ifName, del[i])
 		if nil != err {
 			wasError = fmt.Errorf("failed to unassign IPv4 address from a Linux interface: %v", err)
@@ -390,7 +400,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 	}
 
 	for i := range add {
-		log.WithFields(log.Fields{"IPaddress": add[i], "ifName": ifName}).Debug("IP address added.")
+		log.DefaultLogger().WithFields(log.Fields{"IPaddress": add[i], "ifName": ifName}).Debug("IP address added.")
 		err := linuxcalls.AddInterfaceIP(ifName, add[i])
 		if nil != err {
 			wasError = fmt.Errorf("failed to assign IPv4 address to a Linux interface: %v", err)
@@ -401,7 +411,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 	if newConfig.Mtu != oldConfig.Mtu {
 		mtu := newConfig.Mtu
 		if mtu > 0 {
-			log.WithFields(log.Fields{"MTU": mtu, "ifName": ifName}).Debug("MTU re-configured.")
+			log.DefaultLogger().WithFields(log.Fields{"MTU": mtu, "ifName": ifName}).Debug("MTU re-configured.")
 			err := linuxcalls.SetInterfaceMTU(ifName, int(mtu))
 			if nil != err {
 				wasError = fmt.Errorf("failed to set MTU of a Linux interface: %v", err)
@@ -414,7 +424,7 @@ func (plugin *LinuxInterfaceConfigurator) ModifyLinuxInterface(newConfig *intf.L
 
 // DeleteLinuxInterface reacts to a removed NB configuration of a Linux interface.
 func (plugin *LinuxInterfaceConfigurator) DeleteLinuxInterface(iface *intf.LinuxInterfaces_Interface) error {
-	log.Println("'Deleting' Linux interface", iface.Name)
+	log.DefaultLogger().Println("'Deleting' Linux interface", iface.Name)
 
 	if iface.Type != intf.LinuxInterfaces_VETH {
 		return errors.New("unsupported Linux interface type")
@@ -427,7 +437,7 @@ func (plugin *LinuxInterfaceConfigurator) DeleteLinuxInterface(iface *intf.Linux
 	peer := oldCfg.vethPeer
 
 	if !plugin.isNamespaceAvailable(oldCfg.config.Namespace) || peer == nil || !plugin.isNamespaceAvailable(peer.config.Namespace) {
-		log.WithField("ifName", oldCfg.config.Name).Debug("VETH interface already physically doesn't exist")
+		log.DefaultLogger().WithField("ifName", oldCfg.config.Name).Debug("VETH interface already physically doesn't exist")
 		return nil
 	}
 
@@ -451,57 +461,62 @@ func (plugin *LinuxInterfaceConfigurator) DeleteLinuxInterface(iface *intf.Linux
 }
 
 // removeObsoleteVeth deletes VETH interface which should no longer exist.
-func (plugin *LinuxInterfaceConfigurator) removeObsoleteVeth(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, vethName string) error {
-	log.WithField("vethName", vethName).Debug("Attempting to remove obsolete VETH")
+func (plugin *LinuxInterfaceConfigurator) removeObsoleteVeth(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, vethName string, ns *intf.LinuxInterfaces_Interface_Namespace) error {
+	log.DefaultLogger().WithFields(log.Fields{"vethName": vethName, "ns": linuxcalls.NamespaceToStr(ns)}).Debug("Attempting to remove obsolete VETH")
 
-	_, meta, exists := plugin.ifIndexes.LookupIdx(vethName)
-	if exists {
-		ns := meta.(*intf.LinuxInterfaces_Interface_Namespace)
-		revertNs, err := plugin.switchToNamespace(nsMgmtCtx, ns)
-		defer revertNs()
-		if err != nil {
-			// already removed as namespace no longer exists
-			plugin.ifIndexes.UnregisterName(vethName)
-			return nil
-		}
-		exists, err := linuxcalls.InterfaceExists(vethName)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			// already removed
-			plugin.ifIndexes.UnregisterName(vethName)
-			return nil
-		}
-		ifType, err := linuxcalls.GetInterfaceType(vethName)
-		if err != nil {
-			return err
-		}
-		if ifType != "veth" {
-			return fmt.Errorf("interface '%s' already exists and is not VETH", vethName)
-		}
-		peerName, err := linuxcalls.GetVethPeerName(vethName)
-		if err != nil {
-			return err
-		}
-		log.WithFields(log.Fields{"ifName": vethName, "peerName": peerName}).Debug("Removing obsolete VETH interface")
-		err = linuxcalls.DelVethInterface(vethName, peerName)
-		if err != nil {
-			return err
-		}
+	revertNs, err := plugin.switchToNamespace(nsMgmtCtx, ns)
+	defer revertNs()
+	if err != nil {
+		// already removed as namespace no longer exists
 		plugin.ifIndexes.UnregisterName(vethName)
-		plugin.ifIndexes.UnregisterName(peerName)
+		return nil
 	}
+	exists, err := linuxcalls.InterfaceExists(vethName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		// already removed
+		plugin.ifIndexes.UnregisterName(vethName)
+		return nil
+	}
+	ifType, err := linuxcalls.GetInterfaceType(vethName)
+	if err != nil {
+		return err
+	}
+	if ifType != "veth" {
+		return fmt.Errorf("interface '%s' already exists and is not VETH", vethName)
+	}
+	peerName, err := linuxcalls.GetVethPeerName(vethName)
+	if err != nil {
+		return err
+	}
+	log.DefaultLogger().WithFields(log.Fields{"ifName": vethName, "peerName": peerName}).Debug("Removing obsolete VETH interface")
+	err = linuxcalls.DelVethInterface(vethName, peerName)
+	if err != nil {
+		return err
+	}
+	plugin.ifIndexes.UnregisterName(vethName)
+	plugin.ifIndexes.UnregisterName(peerName)
 	return nil
 }
 
 // addVethInterface creates a new VETH interface with a "clean" configuration.
 func (plugin *LinuxInterfaceConfigurator) addVethInterface(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, iface *intf.LinuxInterfaces_Interface, peer *intf.LinuxInterfaces_Interface) error {
-	err := plugin.removeObsoleteVeth(nsMgmtCtx, iface.Name)
+	err := plugin.removeObsoleteVeth(nsMgmtCtx, iface.Name, iface.Namespace)
 	if err != nil {
 		return err
 	}
-	err = plugin.removeObsoleteVeth(nsMgmtCtx, peer.Name)
+	err = plugin.removeObsoleteVeth(nsMgmtCtx, peer.Name, peer.Namespace)
+	if err != nil {
+		return err
+	}
+	// VETH is first created in the default namespace so it has to be removed there as well.
+	err = plugin.removeObsoleteVeth(nsMgmtCtx, iface.Name, nil)
+	if err != nil {
+		return err
+	}
+	err = plugin.removeObsoleteVeth(nsMgmtCtx, peer.Name, nil)
 	if err != nil {
 		return err
 	}
@@ -535,7 +550,7 @@ func (plugin *LinuxInterfaceConfigurator) addToCache(iface *intf.LinuxInterfaces
 			plugin.intfsByMicroservice[iface.Namespace.Microservice] = []*LinuxInterfaceConfig{config}
 		}
 	}
-	log.Debugf("Linux interface with name %v added to cache (peer: %v)",
+	log.DefaultLogger().Debugf("Linux interface with name %v added to cache (peer: %v)",
 		iface.Name, peer)
 	return config
 }
@@ -556,7 +571,7 @@ func (plugin *LinuxInterfaceConfigurator) removeFromCache(iface *intf.LinuxInter
 			plugin.intfsByMicroservice[iface.Namespace.Microservice] = filtered
 		}
 		delete(plugin.intfByName, iface.Name)
-		log.Debugf("Linux interface with name %v was removed from cache", iface.Name)
+		log.DefaultLogger().Debugf("Linux interface with name %v was removed from cache", iface.Name)
 		return config
 	}
 	return nil
@@ -604,9 +619,7 @@ func (plugin *LinuxInterfaceConfigurator) trackMicroservices(ctx context.Context
 	var err error
 	var since string
 	var lastInspected int64
-
-	created := []string{}       // IDs of containers in the state "created"
-	microservices := []string{} // IDs of containers running microservices
+	created := []string{} // IDs of containers in the state "created"
 
 	plugin.wg.Add(1)
 	defer plugin.wg.Done()
@@ -618,36 +631,32 @@ func (plugin *LinuxInterfaceConfigurator) trackMicroservices(ctx context.Context
 		var listOpts docker.ListContainersOptions
 		var containers []docker.APIContainers
 		nextCreated := []string{}
-		nextMicroservices := []string{}
 
 		if plugin.dockerClient == nil {
 			plugin.dockerClient, err = docker.NewClientFromEnv()
 			if err == nil {
-				log.Info("Successfully established connection with the docker daemon.")
+				log.DefaultLogger().Info("Successfully established connection with the docker daemon.")
 			} else {
 				goto nextRefresh
 			}
 		}
 
 		// first check if any microservice has terminated
-		for _, container := range microservices {
+		plugin.cfgLock.Lock()
+		for container := range plugin.microserviceByID {
 			details, err := plugin.dockerClient.InspectContainer(container)
 			if err != nil || !details.State.Running {
 				plugin.processTerminatedMicroservice(nsMgmtCtx, container)
-			} else {
-				nextMicroservices = append(nextMicroservices, container)
 			}
 		}
-		microservices = nextMicroservices
+		plugin.cfgLock.Unlock()
 
 		// now check if previously created containers have transitioned to the state "running"
 		for _, container := range created {
 			details, err := plugin.dockerClient.InspectContainer(container)
 			if err == nil {
 				if details.State.Running {
-					if plugin.detectMicroservice(nsMgmtCtx, details) {
-						microservices = append(microservices, container)
-					}
+					plugin.detectMicroservice(nsMgmtCtx, details)
 				} else if details.State.Status == "created" {
 					nextCreated = append(nextCreated, container)
 				}
@@ -678,9 +687,7 @@ func (plugin *LinuxInterfaceConfigurator) trackMicroservices(ctx context.Context
 				if err != nil {
 					continue
 				}
-				if plugin.detectMicroservice(nsMgmtCtx, details) {
-					microservices = append(microservices, container.ID)
-				}
+				plugin.detectMicroservice(nsMgmtCtx, details)
 			}
 			if container.State == "created" {
 				created = append(created, container.ID)
@@ -708,7 +715,7 @@ func (plugin *LinuxInterfaceConfigurator) trackMicroservices(ctx context.Context
 
 // detectMicroservice inspects container to see if it is a microservice.
 // If microservice is detected, processNewMicroservice() is called to process it.
-func (plugin *LinuxInterfaceConfigurator) detectMicroservice(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, container *docker.Container) bool {
+func (plugin *LinuxInterfaceConfigurator) detectMicroservice(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, container *docker.Container) {
 	// search for the microservice label
 	var label string
 	for _, env := range container.Config.Env {
@@ -716,11 +723,9 @@ func (plugin *LinuxInterfaceConfigurator) detectMicroservice(nsMgmtCtx *linuxcal
 			label = env[len(servicelabel.MicroserviceLabelEnvVar)+1:]
 			if label != "" {
 				plugin.processNewMicroservice(nsMgmtCtx, label, container.ID, container.State.Pid)
-				return true
 			}
 		}
 	}
-	return false
 }
 
 // processNewMicroservice is triggered every time a new microservice gets freshly started. All pending interfaces are moved
@@ -729,29 +734,17 @@ func (plugin *LinuxInterfaceConfigurator) processNewMicroservice(nsMgmtCtx *linu
 	plugin.cfgLock.Lock()
 	defer plugin.cfgLock.Unlock()
 
-	_, exists := plugin.microserviceByLabel[microserviceLabel]
-	if exists {
-		log.WithFields(log.Fields{"label": microserviceLabel}).Warn("Unexpectedly rediscovered microservice")
-		return
+	microservice, restarted := plugin.microserviceByLabel[microserviceLabel]
+	if restarted {
+		plugin.processTerminatedMicroservice(nsMgmtCtx, microservice.id)
+		log.DefaultLogger().WithFields(log.Fields{"label": microserviceLabel, "new-pid": pid, "new-id": id}).Warn("Microservice was quickly restarted")
+	} else {
+		log.DefaultLogger().WithFields(log.Fields{"label": microserviceLabel, "pid": pid, "id": id}).Debug("Discovered new microservice")
 	}
-	log.WithFields(log.Fields{"label": microserviceLabel, "pid": pid, "id": id}).Debug("Discovered new microservice")
 
-	microservice := &Microservice{label: microserviceLabel, pid: pid, id: id}
+	microservice = &Microservice{label: microserviceLabel, pid: pid, id: id}
 	plugin.microserviceByLabel[microserviceLabel] = microservice
 	plugin.microserviceByID[id] = microservice
-
-	// dump all interfaces in this newly discovered namespace
-	ns := &intf.LinuxInterfaces_Interface_Namespace{}
-	ns.Type = intf.LinuxInterfaces_Interface_Namespace_MICROSERVICE_REF_NS
-	ns.Microservice = microserviceLabel
-	revertNs, err := plugin.switchToNamespace(nsMgmtCtx, ns)
-	if err == nil {
-		plugin.LookupLinuxInterfaces(ns)
-	} else {
-		log.WithFields(log.Fields{"microservice": microserviceLabel, "err": err}).Warn(
-			"Failed to switch into the namespace of a microservice")
-	}
-	revertNs()
 
 	if interfaces, ok := plugin.intfsByMicroservice[microserviceLabel]; ok {
 		skip := make(map[string]struct{}) /* interfaces to be skipped in subsequent iterations */
@@ -768,7 +761,7 @@ func (plugin *LinuxInterfaceConfigurator) processNewMicroservice(nsMgmtCtx *linu
 				// VETH is ready to be created and configured
 				err := plugin.addVethInterface(nsMgmtCtx, intf.config, peer.config)
 				if err != nil {
-					log.Warn(err.Error())
+					log.DefaultLogger().Warn(err.Error())
 					continue
 				}
 				err = plugin.configureLinuxInterface(nsMgmtCtx, intf)
@@ -776,7 +769,7 @@ func (plugin *LinuxInterfaceConfigurator) processNewMicroservice(nsMgmtCtx *linu
 					err = plugin.configureLinuxInterface(nsMgmtCtx, peer)
 				}
 				if err != nil {
-					log.Warn("failed to configure VETH: %v", err)
+					log.DefaultLogger().Warn("failed to configure VETH: %v", err)
 				}
 			}
 		}
@@ -786,15 +779,12 @@ func (plugin *LinuxInterfaceConfigurator) processNewMicroservice(nsMgmtCtx *linu
 // processTerminatedMicroservice is triggered every time a known microservice has terminated. All associated interfaces
 // become obsolete and are thus removed.
 func (plugin *LinuxInterfaceConfigurator) processTerminatedMicroservice(nsMgmtCtx *linuxcalls.NamespaceMgmtCtx, id string) {
-	plugin.cfgLock.Lock()
-	defer plugin.cfgLock.Unlock()
-
 	microservice, exists := plugin.microserviceByID[id]
 	if !exists {
-		log.WithFields(log.Fields{"id": id}).Warn("Detected removal of an unknown microservice")
+		log.DefaultLogger().WithFields(log.Fields{"id": id}).Warn("Detected removal of an unknown microservice")
 		return
 	}
-	log.WithFields(log.Fields{"label": microservice.label, "pid": microservice.pid, "id": microservice.id}).Debug(
+	log.DefaultLogger().WithFields(log.Fields{"label": microservice.label, "pid": microservice.pid, "id": microservice.id}).Debug(
 		"Microservice has terminated")
 
 	delete(plugin.microserviceByLabel, microservice.label)
@@ -802,9 +792,57 @@ func (plugin *LinuxInterfaceConfigurator) processTerminatedMicroservice(nsMgmtCt
 
 	if interfaces, ok := plugin.intfsByMicroservice[microservice.label]; ok {
 		for _, intf := range interfaces {
-			plugin.removeObsoleteVeth(nsMgmtCtx, intf.config.Name)
-			plugin.removeObsoleteVeth(nsMgmtCtx, intf.vethPeer.config.Name)
+			plugin.removeObsoleteVeth(nsMgmtCtx, intf.config.Name, intf.config.Namespace)
+			plugin.removeObsoleteVeth(nsMgmtCtx, intf.vethPeer.config.Name, intf.vethPeer.config.Namespace)
 		}
 	}
-	// TODO: unregister unmanaged interfaces
+}
+
+// TODO: this will become Init method of LinuxInterfaceStateUpdater
+func (plugin *LinuxInterfaceConfigurator) startIfWatcher() error {
+	if !plugin.ifWatcherRunning {
+		plugin.ifWatcherRunning = true
+		err := netlink.LinkSubscribe(plugin.ifWatcherNotifCh, plugin.ifWatcherDoneCh)
+		if err != nil {
+			return err
+		}
+		go plugin.watchLinuxInterfaces(plugin.ctx)
+	}
+	return nil
+}
+
+// TODO: move to LinuxInterfaceStateUpdater and use channels to communicate with LinuxInterfaceConfigurator.
+func (plugin *LinuxInterfaceConfigurator) watchLinuxInterfaces(ctx context.Context) {
+	plugin.wg.Add(1)
+	defer plugin.wg.Done()
+
+	for {
+		select {
+		case linkNotif := <-plugin.ifWatcherNotifCh:
+			plugin.processLinkNotification(linkNotif)
+
+		case <-ctx.Done():
+			close(plugin.ifWatcherDoneCh)
+			return
+		}
+	}
+}
+
+// TODO: move to LinuxInterfaceStateUpdater
+func (plugin *LinuxInterfaceConfigurator) processLinkNotification(link netlink.Link) {
+	linkAttrs := link.Attrs()
+	log.DefaultLogger().WithFields(log.Fields{"name": linkAttrs.Name}).Debug("Processing Linux link update")
+
+	plugin.cfgLock.Lock()
+	defer plugin.cfgLock.Unlock()
+
+	// register newly added interface only if it is not already managed by this plugin
+	_, _, known := plugin.ifIndexes.LookupIdx(linkAttrs.Name)
+	if !known {
+		log.DefaultLogger().WithFields(log.Fields{"name": linkAttrs.Name, "idx": linkAttrs.Index}).
+			Debug("Found new Linux interface")
+		plugin.ifIndexes.RegisterName(linkAttrs.Name, uint32(linkAttrs.Index), nil)
+	}
+
+	// TODO: process state data
 }

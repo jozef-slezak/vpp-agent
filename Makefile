@@ -17,9 +17,11 @@ define generate_sources
 	@cd vendor/github.com/golang/mock/mockgen && go install -v
 	@echo "# generating sources"
 	@cd plugins/linuxplugin && go generate
+	@cd plugins/defaultplugins/aclplugin && go generate
 	@cd plugins/defaultplugins/ifplugin && go generate
 	@cd plugins/defaultplugins/l2plugin && go generate
 	@cd plugins/defaultplugins/l3plugin && go generate
+	@cd plugins/defaultplugins/aclplugin/bin_api/acl && pkgreflect
 	@cd plugins/defaultplugins/ifplugin/bin_api/af_packet && pkgreflect
 	@cd plugins/defaultplugins/ifplugin/bin_api/bfd && pkgreflect
 	@cd plugins/defaultplugins/ifplugin/bin_api/interfaces && pkgreflect
@@ -95,37 +97,52 @@ define format_only
     @echo "# done"
 endef
 
+# run test examples
+define test_examples
+    @echo "# Testing examples"
+    ./scripts/test_examples.sh
+    @echo "# done"
+endef
+
 # build examples only
 define build_examples_only
     @echo "# building examples"
-    @cd examples/govpp_call && go build -v
-    @cd examples/idx_bd_cache && go build -v
-    @cd examples/idx_iface_cache && go build -v
-    @cd examples/idx_mapping_lookup && go build -v
-    @cd examples/idx_mapping_watcher && go build -v
-    @cd examples/localclient_linux && go build -v
-    @cd examples/localclient_vpp && go build -v
+    @cd examples/govpp_call && go build -v -i
+    @cd examples/idx_bd_cache && go build -v -i
+    @cd examples/idx_iface_cache && go build -v -i
+    @cd examples/idx_mapping_lookup && go build -v -i
+    @cd examples/idx_mapping_watcher && go build -v -i
+    @cd examples/localclient_linux && go build -v -i
+    @cd examples/localclient_vpp && go build -v -i
     @echo "# done"
 endef
 
 # build vpp agent only
 define build_vpp_agent_only
     @echo "# building vpp agent"
-    @cd cmd/vpp-agent && go build -v
+    @cd cmd/vpp-agent && go build -v -i ${LDFLAGS}
+    @echo "# done"
+endef
+
+# verify that links in markdown files are valid
+# requires npm install -g markdown-link-check
+define check_links_only
+    @echo "# checking links"
+    @./scripts/check_links.sh
     @echo "# done"
 endef
 
 # build vpp-agent-ctl only
 define build_vpp_agent_ctl_only
     @echo "# building vpp-agent-ctl"
-    @cd cmd/vpp-agent-ctl && go build -v
+    @cd cmd/vpp-agent-ctl && go build -v -i
     @echo "# done"
 endef
 
 # build-only agentctl
 define build_agentctl_only
  	@echo "# building agentctl"
- 	@cd cmd/agentctl && go build -v
+ 	@cd cmd/agentctl && go build -v -i
  	@echo "# done"
 endef
 
@@ -185,6 +202,10 @@ generate:
 test:
 	$(call test_only)
 
+# run smoke tests on examples
+test-examples:
+	$(call test_examples)
+
 # run tests with coverage report
 test-cover:
 	$(call test_cover_only)
@@ -205,6 +226,9 @@ lint:
 format:
 	$(call format_only)
 
+# validate links in markdown files
+check_links:
+	$(call check_links_only)
 
 # clean
 clean:

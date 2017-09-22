@@ -16,6 +16,7 @@ package syncbase
 
 import (
 	"encoding/json"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/ligato/cn-infra/datasync"
 )
@@ -37,7 +38,7 @@ func (it *KVIterator) GetNext() (kv datasync.KeyVal, allReceived bool) {
 	return ret, false
 }
 
-// NewKeyVal is a constructor
+// NewKeyVal creates a new instance of KeyVal.
 func NewKeyVal(key string, value datasync.LazyValue, rev int64) *KeyVal {
 	return &KeyVal{key, value, rev}
 }
@@ -71,12 +72,12 @@ func (lazy *lazyProto) GetValue(out proto.Message) error {
 	return nil
 }
 
-// NewKVIterator is a constructor
+// NewKVIterator creates a new instance of KVIterator.
 func NewKVIterator(data []datasync.KeyVal) *KVIterator {
 	return &KVIterator{data: data}
 }
 
-// NewKeyValBytes is a constructor
+// NewKeyValBytes creates a new instance of KeyValBytes.
 func NewKeyValBytes(key string, value []byte, rev int64) *KeyValBytes {
 	return &KeyValBytes{key, value, rev}
 }

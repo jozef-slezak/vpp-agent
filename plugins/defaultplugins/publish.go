@@ -16,15 +16,11 @@ package defaultplugins
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-
 	log "github.com/ligato/cn-infra/logging/logrus"
 	intf "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/l2plugin/model/l2"
 )
 
-const kafkaIfStateTopic = "if_state" // Kafka topic where interface state changes are published.
 
 // Resync deletes obsolete operation status of network interfaces in DB
 // Obsolete state is one that is not part of SwIfIndex
@@ -37,18 +33,20 @@ func (plugin *Plugin) resyncIfStateEvents(keys []string) error {
 
 		_, _, found := plugin.swIfIndexes.LookupIdx(ifaceName)
 		if !found {
-			log.Debug("deleting obsolete status begin ", key)
-			err := plugin.Transport.PublishData(key, nil /*means delete*/)
-			log.Debug("deleting obsolete status end ", key, err)
+			err := plugin.PublishStatistics.Put(key, nil /*means delete*/)
+			if err != nil {
+				return err
+			}
+			log.DefaultLogger().Debugf("Obsolete status for %v deleted", key)
 		} else {
-			log.WithField("ifaceName", ifaceName).Debug("interface status is needed")
+			log.DefaultLogger().WithField("ifaceName", ifaceName).Debug("interface status is needed")
 		}
 	}
 
 	return nil
 }
 
-// publishIfState goroutine is used to watch interface state notifications that are propagated to Kafka topic
+// publishIfState goroutine is used to watch interface state notifications that are propagated to Messaging topic
 func (plugin *Plugin) publishIfStateEvents(ctx context.Context) {
 	plugin.wg.Add(1)
 	defer plugin.wg.Done()
@@ -56,23 +54,24 @@ func (plugin *Plugin) publishIfStateEvents(ctx context.Context) {
 	for {
 		select {
 		case ifState := <-plugin.ifStateChan:
-			plugin.Transport.PublishData(intf.InterfaceStateKey(ifState.State.Name), ifState.State)
+			key := intf.InterfaceStateKey(ifState.State.Name)
+
+			if plugin.PublishStatistics != nil {
+				err := plugin.PublishStatistics.Put(key, ifState.State)
+				if err != nil {
+					plugin.Log.Error(err)
+				} else {
+					plugin.Log.Debug("Sending Messaging notification")
+				}
+			}
 
 			// marshall data into JSON & send kafka message
-			if plugin.kafkaConn != nil && ifState.Type == intf.UPDOWN {
-				json, err := json.Marshal(ifState.State)
+			if plugin.ifStateNotifications != nil && ifState.Type == intf.UPDOWN {
+				err := plugin.ifStateNotifications.Put(key, ifState.State)
 				if err != nil {
-					log.Error(err)
+					plugin.Log.Error(err)
 				} else {
-
-					// send kafka message
-					_, err = plugin.kafkaConn.SendSyncString(kafkaIfStateTopic,
-						fmt.Sprintf("%s", ifState.State.Name), string(json))
-					if err != nil {
-						log.Error(err)
-					} else {
-						log.Debug("Sending Kafka notification")
-					}
+					plugin.Log.Debug("Sending Messaging notification")
 				}
 			}
 
@@ -92,11 +91,13 @@ func (plugin *Plugin) resyncBdStateEvents(keys []string) error {
 		}
 		_, _, found := plugin.bdIndexes.LookupIdx(bdName)
 		if !found {
-			log.Debug("deleting obsolete status begin ", key)
-			err := plugin.Transport.PublishData(key, nil)
-			log.Debug("deleting obsolete status end ", key, err)
+			err := plugin.Publish.Put(key, nil)
+			if err != nil {
+				return err
+			}
+			log.DefaultLogger().Debugf("Obsolete status for %v deleted", key)
 		} else {
-			log.WithField("bdName", bdName).Debug("bridge domain status required")
+			log.DefaultLogger().WithField("bdName", bdName).Debug("bridge domain status required")
 		}
 	}
 
@@ -111,18 +112,18 @@ func (plugin *Plugin) publishBdStateEvents(ctx context.Context) {
 	for {
 		select {
 		case bdState := <-plugin.bdStateChan:
-			if bdState != nil && bdState.State != nil {
+			if bdState != nil && bdState.State != nil && plugin.Publish != nil {
 				key := l2.BridgeDomainStateKey(bdState.State.InternalName)
 				// Remove BD state
 				if bdState.State.Index == 0 && bdState.State.InternalName != "" {
-					plugin.Transport.PublishData(key, nil)
-					log.Debugf("Bridge domain %v: state removed from ETCD", bdState.State.InternalName)
+					plugin.Publish.Put(key, nil)
+					log.DefaultLogger().Debugf("Bridge domain %v: state removed from ETCD", bdState.State.InternalName)
 					// Write/Update BD state
 				} else if bdState.State.Index != 0 {
-					plugin.Transport.PublishData(key, bdState.State)
-					log.Debugf("Bridge domain %v: state stored in ETCD", bdState.State.InternalName)
+					plugin.Publish.Put(key, bdState.State)
+					log.DefaultLogger().Debugf("Bridge domain %v: state stored in ETCD", bdState.State.InternalName)
 				} else {
-					log.Warnf("Unable to process bridge domain state with Idx %v and Name %v",
+					log.DefaultLogger().Warnf("Unable to process bridge domain state with Idx %v and Name %v",
 						bdState.State.Index, bdState.State.InternalName)
 				}
 			}

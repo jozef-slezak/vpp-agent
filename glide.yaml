@@ -1,13 +1,13 @@
 package: github.com/ligato/vpp-agent
 import:
 - package: github.com/ligato/cn-infra
-  version: 548bb1182483f7d3b648c6404f9fe530152db136
+  version: 4ca8cdbfdb9741932f61cc52cc929b63d56a2f81
 - package: github.com/wadey/gocovmerge
   version: b5bfa59ec0adc420475f97f89b58045c721d761c
 - package: github.com/onsi/gomega
   version: v1.2.0
 - package: git.fd.io/govpp.git
-  version: 3ec4064566b9e4db1a88c007e0d9a513f7673b36
+  version: 03bc1c23595e998e8fa75a65e23bedfbec115643
   repo: https://git.fd.io/govpp.git
   subpackages:
   - adapter
@@ -36,3 +36,18 @@ import:
   version: 962a6974312dde57d1f6f5738b4f83e1af9f38a4
 - package: github.com/buger/goterm
   version: bc6c333206f446a53cac4db5d2e6a4316139d737
+- package: github.com/taylorchu/generic
+  version: v0.3
+  subpackages:
+  - cmd/generic
+- package: github.com/ungerik/pkgreflect
+  version: bfeb2a93186329a0bb03885bea902e86842f633d
+- package: github.com/golang/mock
+  version: bd3c8e81be01eef76d4b503f5e687d2d1354d2d9
+  repo: https://github.com/golang/mock
+  subpackages:
+  - gomock
+- package: github.com/bennyscetbun/jsongo
+  version: 5240b3f82c6665fe3ccd96bdf5e6f38fe1e1399d
+- package: github.com/sirupsen/logrus
+  version: v1.0.0

@@ -23,6 +23,7 @@ import (
 	intf "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/l2plugin/model/l2"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/l3plugin/model/l3"
+	"net"
 )
 
 // NewDataChangeDSL is a constructor
@@ -79,7 +80,7 @@ func (dsl *PutDSL) BD(val *l2.BridgeDomains_BridgeDomain) defaultplugins.PutDSL 
 
 // BDFIB delete request for the L2 Forwarding Information Base
 func (dsl *PutDSL) BDFIB(val *l2.FibTableEntries_FibTableEntry) defaultplugins.PutDSL {
-	dsl.parent.txn.Put(l2.FibKey(val.PhysAddress), val)
+	dsl.parent.txn.Put(l2.FibKey(val.BridgeDomain, val.PhysAddress), val)
 
 	return dsl
 }
@@ -92,15 +93,16 @@ func (dsl *PutDSL) XConnect(val *l2.XConnectPairs_XConnectPair) defaultplugins.P
 }
 
 // StaticRoute create or update the L3 Static Route
-func (dsl *PutDSL) StaticRoute(val *l3.StaticRoutes) defaultplugins.PutDSL {
-	dsl.parent.txn.Put(l3.RouteKey(), val)
+func (dsl *PutDSL) StaticRoute(val *l3.StaticRoutes_Route) defaultplugins.PutDSL {
+	_, dstAddr, _ := net.ParseCIDR(val.DstIpAddr)
+	dsl.parent.txn.Put(l3.RouteKey(val.VrfId, dstAddr, val.NextHopAddr), val)
 
 	return dsl
 }
 
 // ACL create or update request for the Access Control List
 func (dsl *PutDSL) ACL(val *acl.AccessLists_Acl) defaultplugins.PutDSL {
-	dsl.parent.txn.Put(l3.RouteKey(), val)
+	dsl.parent.txn.Put(acl.Key(val.AclName), val)
 
 	return dsl
 }
@@ -140,8 +142,8 @@ func (dsl *DeleteDSL) BD(bdName string) defaultplugins.DeleteDSL {
 }
 
 // BDFIB delete request for the L2 Forwarding Information Base
-func (dsl *DeleteDSL) BDFIB(mac string) defaultplugins.DeleteDSL {
-	dsl.parent.txn.Delete(l2.FibKey(mac))
+func (dsl *DeleteDSL) BDFIB(bdName string, mac string) defaultplugins.DeleteDSL {
+	dsl.parent.txn.Delete(l2.FibKey(bdName, mac))
 
 	return dsl
 }
@@ -154,8 +156,9 @@ func (dsl *DeleteDSL) XConnect(rxIfName string) defaultplugins.DeleteDSL {
 }
 
 // StaticRoute create or update the L3 Static Route
-func (dsl *DeleteDSL) StaticRoute() defaultplugins.DeleteDSL {
-	dsl.parent.txn.Delete(l3.RouteKey())
+func (dsl *DeleteDSL) StaticRoute(vrf uint32, dstAddrInput *net.IPNet, nextHopAddr net.IP) defaultplugins.DeleteDSL {
+	//_, dstAddr, _ := net.ParseCIDR(dstAddrInput)
+	dsl.parent.txn.Delete(l3.RouteKey(vrf, dstAddrInput, nextHopAddr.String()))
 
 	return dsl
 }

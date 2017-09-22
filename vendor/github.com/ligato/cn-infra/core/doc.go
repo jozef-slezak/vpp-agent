@@ -12,5 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package core defines API for plugins and contains the Agent that manages the plugins lifecycle.
+// Package core manages the lifecycle of all plugins (start, graceful
+// shutdown) and defines the core lifecycle SPI. The core lifecycle SPI
+// must be implemented by each plugin.
 package core

@@ -28,6 +28,7 @@ import (
 	"git.fd.io/govpp.git/adapter"
 	"git.fd.io/govpp.git/api"
 	"git.fd.io/govpp.git/core/bin_api/vpe"
+	"github.com/fsnotify/fsnotify"
 )
 
 const (
@@ -36,9 +37,10 @@ const (
 	notificationChannelBufSize = 100 // default size of the notification channel buffers
 )
 
-const (
+var (
 	healthCheckProbeInterval = time.Second * 1        // default health check probe interval
 	healthCheckReplyTimeout  = time.Millisecond * 100 // timeout for reply to a health check probe
+	healthCheckThreshold     = 1                      // number of failed healthProbe until the error is reported
 )
 
 // ConnectionState holds the current state of the connection to VPP.
@@ -50,6 +52,15 @@ const (
 
 	// Disconnected connection state means that the connection to VPP has been lost.
 	Disconnected = iota
+)
+
+const (
+	// watchedFolder is a folder where vpp's shared memory is supposed to be created.
+	// File system events are monitored in this folder.
+	watchedFolder = "/dev/shm/"
+	// watchedFile is a name of the file in the watchedFolder. Once the file is present
+	// the vpp is ready to accept a new connection.
+	watchedFile = watchedFolder + "vpe-api"
 )
 
 // ConnectionEvent is a notification about change in the VPP connection state.
@@ -103,6 +114,28 @@ func init() {
 // SetLogger sets global logger to provided one.
 func SetLogger(l *logger.Logger) {
 	log = l
+}
+
+// SetHealthCheckProbeInterval sets health check probe interval.
+// Beware: Function is not thread-safe. It is recommended to setup this parameter
+// before connecting to vpp.
+func SetHealthCheckProbeInterval(interval time.Duration) {
+	healthCheckProbeInterval = interval
+}
+
+// SetHealthCheckReplyTimeout sets timeout for reply to a health check probe.
+// If reply arrives after the timeout, check is considered as failed.
+// Beware: Function is not thread-safe. It is recommended to setup this parameter
+// before connecting to vpp.
+func SetHealthCheckReplyTimeout(timeout time.Duration) {
+	healthCheckReplyTimeout = timeout
+}
+
+// SetHealthCheckThreshold sets the number of failed healthProbe checks until the error is reported.
+// Beware: Function is not thread-safe. It is recommended to setup this parameter
+// before connecting to vpp.
+func SetHealthCheckThreshold(threshold int) {
+	healthCheckThreshold = threshold
 }
 
 // Connect connects to VPP using specified VPP adapter and returns the connection handle.
@@ -202,11 +235,48 @@ func (c *Connection) disconnectVPP() {
 	}
 }
 
+func fileExists(name string) bool {
+	if _, err := os.Stat(name); err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+	}
+	return true
+}
+
+// waitForVpp blocks until shared memory for sending bin api calls
+// is present on the file system.
+func waitForVpp() error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(watchedFolder)
+	if err != nil {
+		return err
+	}
+
+	if fileExists(watchedFile) {
+		return nil
+	}
+
+	for {
+		ev := <-watcher.Events
+		if ev.Name == watchedFile && (ev.Op&fsnotify.Create) == fsnotify.Create {
+			break
+		}
+	}
+	return nil
+}
+
 // connectLoop attempts to connect to VPP until it succeeds.
 // Then it continues with healthCheckLoop.
 func (c *Connection) connectLoop(connChan chan ConnectionEvent) {
 	// loop until connected
 	for {
+		waitForVpp()
 		err := c.connectVPP()
 		if err == nil {
 			// signal connected event
@@ -229,6 +299,7 @@ func (c *Connection) healthCheckLoop(connChan chan ConnectionEvent) {
 		return
 	}
 
+	failedChecks := 0
 	// send health check probes until an error occurs
 	for {
 		// wait for healthCheckProbeInterval
@@ -251,8 +322,14 @@ func (c *Connection) healthCheckLoop(connChan chan ConnectionEvent) {
 			err = errors.New("probe reply not received within the timeout period")
 		}
 
-		// in case of error, break & disconnect
 		if err != nil {
+			failedChecks++
+		} else {
+			failedChecks = 0
+		}
+
+		if failedChecks >= healthCheckThreshold {
+			// in case of error, break & disconnect
 			log.Errorf("VPP health check failed: %v", err)
 			// signal disconnected event via channel
 			connChan <- ConnectionEvent{Timestamp: time.Now(), State: Disconnected}

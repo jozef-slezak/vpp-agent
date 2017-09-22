@@ -22,17 +22,18 @@ import (
 	"time"
 
 	"github.com/ligato/cn-infra/datasync"
-	"github.com/ligato/cn-infra/db"
-	log "github.com/ligato/cn-infra/logging/logrus"
+	"github.com/ligato/cn-infra/logging/logroot"
 )
 
-// NewWatcher is a constructor
-func NewWatcher() *Watcher {
-	return &Watcher{subscriptions: map[string]*Subscription{}, access: sync.Mutex{}, lastRev: NewLatestRev()}
+// NewRegistry creates reusable registry of subscriptions for a particular datasync plugin.
+func NewRegistry() *Registry {
+	return &Registry{subscriptions: map[string]*Subscription{}, access: sync.Mutex{}, lastRev: NewLatestRev()}
 }
 
-// Watcher is simple implementation used for propagating events directly using channels
-type Watcher struct {
+// Registry of subscriptions and latest revisions.
+// This structure contains extracted reusable code among various datasync implementations.
+// By having this code datasync plugins do not need to repeat code related management of subscriptions.
+type Registry struct {
 	subscriptions map[string]*Subscription
 	access        sync.Mutex
 	lastRev       *PrevRevisions
@@ -41,11 +42,11 @@ type Watcher struct {
 // WatchDataReg implements interface datasync.WatchDataRegistration
 type WatchDataReg struct {
 	ResyncName string
-	adapter    *Watcher
+	adapter    *Registry
 	CloseChan  chan interface{}
 }
 
-// Close stops watching particular KeyPrefixes
+// Close stops watching of particular KeyPrefixes.
 func (reg *WatchDataReg) Close() error {
 	reg.adapter.access.Lock()
 	defer reg.adapter.access.Unlock()
@@ -66,7 +67,7 @@ type Subscription struct {
 }
 
 // WatchDataBase just appends channels
-func (adapter *Watcher) WatchDataBase(resyncName string, changeChan chan datasync.ChangeEvent,
+func (adapter *Registry) WatchDataBase(resyncName string, changeChan chan datasync.ChangeEvent,
 	resyncChan chan datasync.ResyncEvent, keyPrefixes ...string) (*WatchDataReg, error) {
 
 	adapter.access.Lock()
@@ -85,24 +86,24 @@ func (adapter *Watcher) WatchDataBase(resyncName string, changeChan chan datasyn
 	return reg, nil
 }
 
-// WatchData just appends channels
-func (adapter *Watcher) WatchData(resyncName string, changeChan chan datasync.ChangeEvent,
-	resyncChan chan datasync.ResyncEvent, keyPrefixes ...string) (datasync.WatchDataRegistration, error) {
+// Watch just appends channels
+func (adapter *Registry) Watch(resyncName string, changeChan chan datasync.ChangeEvent,
+	resyncChan chan datasync.ResyncEvent, keyPrefixes ...string) (datasync.WatchRegistration, error) {
 	return adapter.WatchDataBase(resyncName, changeChan, resyncChan, keyPrefixes...)
 }
 
 // Subscriptions returns the current subscriptions.
-func (adapter *Watcher) Subscriptions() map[string]*Subscription {
+func (adapter *Registry) Subscriptions() map[string]*Subscription {
 	return adapter.subscriptions
 }
 
 // LastRev is just getter
-func (adapter *Watcher) LastRev() *PrevRevisions {
+func (adapter *Registry) LastRev() *PrevRevisions {
 	return adapter.lastRev
 }
 
 // PropagateChanges fills registered channels with the data
-func (adapter *Watcher) PropagateChanges(txData map[string] /*key*/ datasync.ChangeValue) error {
+func (adapter *Registry) PropagateChanges(txData map[string] /*key*/ datasync.ChangeValue) error {
 	events := []func(done chan error){}
 
 	for _, sub := range adapter.subscriptions {
@@ -111,7 +112,7 @@ func (adapter *Watcher) PropagateChanges(txData map[string] /*key*/ datasync.Cha
 				if strings.HasPrefix(key, prefix) {
 					var prev datasync.LazyValueWithRev
 					var curRev int64
-					if db.Delete == val.GetChangeType() {
+					if datasync.Delete == val.GetChangeType() {
 						_, prev = adapter.lastRev.Del(key)
 						if prev != nil {
 							curRev = prev.GetRevision() + 1
@@ -141,14 +142,14 @@ func (adapter *Watcher) PropagateChanges(txData map[string] /*key*/ datasync.Cha
 			return err
 		}
 	case <-time.After(5 * time.Second):
-		log.Warn("Timeout of aggregated change callback")
+		logroot.StandardLogger().Warn("Timeout of aggregated change callback")
 	}
 
 	return nil
 }
 
 // PropagateResync fills registered channels with the data
-func (adapter *Watcher) PropagateResync(txData map[ /*key*/ string]datasync.ChangeValue) error {
+func (adapter *Registry) PropagateResync(txData map[ /*key*/ string]datasync.ChangeValue) error {
 	for _, sub := range adapter.subscriptions {
 		resyncEv := NewResyncEventDB(map[string] /*keyPrefix*/ datasync.KeyValIterator{})
 		for _, prefix := range sub.KeyPrefixes {
@@ -166,13 +167,3 @@ func (adapter *Watcher) PropagateResync(txData map[ /*key*/ string]datasync.Chan
 
 	return nil
 }
-
-/*
-if db.Delete == val.GetChangeType() {
-						var prevRev int64
-						_, prevRev, prev = adapter.lastRev.Del(key)
-						currRev = prevRev + 1
-					} else {
-						_, _, prev, currRev = adapter.lastRev.Put(key, val.Data)
-
-*/

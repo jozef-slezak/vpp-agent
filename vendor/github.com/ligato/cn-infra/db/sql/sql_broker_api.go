@@ -18,20 +18,21 @@ import (
 	"io"
 )
 
-// Broker execute SQL statements in the data store.
+// Broker executes SQL statements in the data store.
 // It marshals/un-marshals go structures.
 type Broker interface {
-	// Put puts single value (inBinding) into the data store
+	// Put puts single value <inBinding> into the data store
 	// Example usage:
 	//
 	//    err = db.Put("ID='James Bond'", &User{"James Bond", "James", "Bond"})
 	//
 	Put(where Expression, inBinding interface{} /* TODO opts ...PutOption*/) error
 
-	// NewTxn creates a transaction / batch
+	// NewTxn creates a transaction / batch.
 	NewTxn() Txn
 
-	// GetValue retrieves one item based on the query. If the item exists it is un-marshaled into the outBinding.
+	// GetValue retrieves one item based on the <query>. If the item exists,
+	// it is un-marshaled into the <outBinding>.
 	//
 	// Example usage 1:
 	//
@@ -45,9 +46,10 @@ type Broker interface {
 	//    user := &User{}
 	//    found, err := db.GetValue(query, user)
 	//
-	GetValue(query string, outBinding interface{}) (found bool, err error)
+	GetValue(query Expression, outBinding interface{}) (found bool, err error)
 
-	// ListValues returns an iterator that enables to traverse all items returned by the query
+	// ListValues returns an iterator that enables to traverse all items
+	// returned by the <query>.
 	// Use utilities to:
 	// - generate query string
 	// - fill slice by values from iterator (SliceIt).
@@ -78,30 +80,33 @@ type Broker interface {
 	// Example usage 1:
 	//
 	//    query := sql.FROM(JamesBond, sql.WHERE(sql.PK(&JamesBond.ID))
-	//    err := db.Delete(query)
+	//    err := datasync.Delete(query)
 	//
 	// Example usage 2:
 	//
-	//    err := db.Delete("from User where ID='James Bond'")
+	//    err := datasync.Delete("from User where ID='James Bond'")
 	//
 	// Example usage 3:
 	//
 	//    query := sql.FROM(UserTable, sql.WHERE(sql.Field(&UserTable.LastName, sql.EQ("Bond")))
-	//    err := db.Delete(query)
+	//    err := datasync.Delete(query)
 	//
 	Delete(fromWhere Expression) error
 
-	// Executes the SQL statement (can be used for example for create "table/type" if not exits...)
+	// Executes the SQL statement (can be used for example to create
+	// "table/type" if not exits...)
 	// Example usage:
 	//
 	//  	 err := db.Exec("CREATE INDEX IF NOT EXISTS...")
-	Exec(statement string) error
+	Exec(statement string, bindings ...interface{}) error
 }
 
 // ValIterator is an iterator returned by ListValues call.
 type ValIterator interface {
-	// GetNext retrieves the current "row" from query result. GetValue is un-marshaled into the provided argument.
-	// The stop=true will be returned if there is no more record or if error occurred (to get the error call Close())
+	// GetNext retrieves the current "row" from query result.
+	// GetValue is un-marshaled into the provided argument.
+	// The stop=true will be returned if there is no more record or if error
+	// occurred (to get the error call Close()).
 	// When the stop=true is returned the outBinding was not updated.
 	GetNext(outBinding interface{}) (stop bool)
 
@@ -109,12 +114,14 @@ type ValIterator interface {
 	io.Closer
 }
 
-// Txn allows to group operations into the transaction or batch (depending on a particular data store).
-// Transaction executes usually multiple operations in a more efficient way in contrast to executing them one by one.
+// Txn allows to group operations into the transaction or batch
+// (depending on a particular data store).
+// Transaction executes usually multiple operations in a more efficient way
+// in contrast to executing them one by one.
 type Txn interface {
-	// Put adds put operation into the transaction
+	// Put adds put operation into the transaction.
 	Put(where Expression, data interface{}) Txn
-	// Delete adds delete operation, which removes value identified by the key, into the transaction
+	// Delete adds delete operation into the transaction.
 	Delete(fromWhere Expression) Txn
 	// Commit tries to commit the transaction.
 	Commit() error

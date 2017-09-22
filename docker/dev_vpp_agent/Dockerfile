@@ -31,10 +31,10 @@ RUN /bin/bash -c "if [ '${VPP_URL}' == 'xxx' ]; then \
     fi"
 
 # install Go & Glide
-RUN wget https://storage.googleapis.com/golang/go1.8.3.linux-amd64.tar.gz && \
-    tar -xvf go1.8.3.linux-amd64.tar.gz && \
+RUN wget https://storage.googleapis.com/golang/go1.9.linux-amd64.tar.gz && \
+    tar -xvf go1.9.linux-amd64.tar.gz && \
     mv go /usr/local && \
-    rm -f go1.8.3.linux-amd64.tar.gz
+    rm -f go1.9.linux-amd64.tar.gz
 
 # build & install Protobuf & gogo protobuf compiler
 RUN apt-get install -y make && \
@@ -55,6 +55,7 @@ RUN ./build-agent.sh ${AGENT_COMMIT}
 
 COPY etcd.conf .
 COPY kafka.conf .
+COPY govpp.conf .
 COPY vpp.conf /etc/vpp/vpp.conf
 
 WORKDIR /root/

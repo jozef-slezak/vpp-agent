@@ -15,19 +15,23 @@
 package main
 
 import (
-	"github.com/ligato/cn-infra/core"
-	"github.com/ligato/cn-infra/logging"
-	"github.com/ligato/cn-infra/logging/logroot"
 	"os"
 	"time"
-	"github.com/ligato/cn-infra/examples/simple-agent/generic"
+
+	"github.com/ligato/cn-infra/core"
+	"github.com/ligato/cn-infra/flavors/connectors"
+	"github.com/ligato/cn-infra/flavors/rpc"
+	"github.com/ligato/cn-infra/logging"
+	"github.com/ligato/cn-infra/logging/logroot"
 )
 
 func main() {
-	logroot.Logger().SetLevel(logging.DebugLevel)
+	logroot.StandardLogger().SetLevel(logging.DebugLevel)
 
-	f := generic.Flavour{}
-	agent := core.NewAgent(logroot.Logger(), 15*time.Second, f.Plugins()...)
+	connectors := connectors.AllConnectorsFlavor{}
+	rpcs := rpc.FlavorRPC{}
+	agent := core.NewAgent(logroot.StandardLogger(), 15*time.Second, append(
+		connectors.Plugins(), rpcs.Plugins()...)...)
 
 	err := core.EventLoopWithInterrupt(agent, nil)
 	if err != nil {

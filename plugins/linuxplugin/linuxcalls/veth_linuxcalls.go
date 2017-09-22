@@ -26,7 +26,7 @@ import (
 
 // AddVethInterface calls LinkAdd Netlink API for the Netlink.Veth interface type.
 func AddVethInterface(ifName, peerIfName string) error {
-	log.WithFields(log.Fields{"ifName": ifName, "peerIfName": peerIfName}).Debug("Creating new Linux VETH pair")
+	log.DefaultLogger().WithFields(log.Fields{"ifName": ifName, "peerIfName": peerIfName}).Debug("Creating new Linux VETH pair")
 
 	// Veth pair params
 	veth := &netlink.Veth{
@@ -38,16 +38,13 @@ func AddVethInterface(ifName, peerIfName string) error {
 	}
 
 	// Create the veth pair
-	if err := netlink.LinkAdd(veth); err != nil {
-		return err
-	}
-
-	return nil
+	err := netlink.LinkAdd(veth)
+	return err
 }
 
 // DelVethInterface calls LinkDel Netlink API for the Netlink.Veth interface type.
 func DelVethInterface(ifName, peerIfName string) error {
-	log.WithFields(log.Fields{"ifName": ifName, "peerIfName": peerIfName}).Debug("Deleting Linux VETH pair")
+	log.DefaultLogger().WithFields(log.Fields{"ifName": ifName, "peerIfName": peerIfName}).Debug("Deleting Linux VETH pair")
 
 	// Veth pair params
 	veth := &netlink.Veth{
@@ -59,11 +56,8 @@ func DelVethInterface(ifName, peerIfName string) error {
 	}
 
 	// Create the veth pair
-	if err := netlink.LinkDel(veth); err != nil {
-		return err
-	}
-
-	return nil
+	err := netlink.LinkDel(veth)
+	return err
 }
 
 // GetVethPeerName return the peer name for a given VETH interface.

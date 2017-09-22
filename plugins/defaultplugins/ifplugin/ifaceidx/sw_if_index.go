@@ -17,9 +17,9 @@ package ifaceidx
 import (
 	"github.com/ligato/cn-infra/core"
 	log "github.com/ligato/cn-infra/logging/logrus"
-	intf "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 	"github.com/ligato/vpp-agent/idxvpp"
 	"github.com/ligato/vpp-agent/idxvpp/nametoidx"
+	intf "github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
 )
 
 // SwIfIndex provides read-only access to mapping between software interface indexes (used internally in VPP)
@@ -87,7 +87,7 @@ func (swi *swIfIndex) RegisterName(name string, idx uint32, ifMeta *intf.Interfa
 
 // IndexMetadata creates indexes for metadata. Index for IPAddress will be created
 func IndexMetadata(metaData interface{}) map[string][]string {
-	log.Debug("IndexMetadata ", metaData)
+	log.DefaultLogger().Debug("IndexMetadata ", metaData)
 
 	indexes := map[string][]string{}
 	ifMeta, ok := metaData.(*intf.Interfaces_Interface)

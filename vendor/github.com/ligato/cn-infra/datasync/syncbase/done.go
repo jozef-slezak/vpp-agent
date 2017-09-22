@@ -15,10 +15,10 @@
 package syncbase
 
 import (
-	log "github.com/ligato/cn-infra/logging/logrus"
+	"github.com/ligato/cn-infra/logging/logroot"
 )
 
-// NewDoneChannel is a constructor
+// NewDoneChannel creates a new instance of DoneChannel.
 func NewDoneChannel(doneChan chan error) *DoneChannel {
 	return &DoneChannel{doneChan}
 }
@@ -29,17 +29,17 @@ type DoneChannel struct {
 	DoneChan chan error
 }
 
-// Done propagates error to the channel
+// Done propagates error to the channel.
 func (ev *DoneChannel) Done(err error) {
 	if ev.DoneChan != nil {
 		select {
 		case ev.DoneChan <- err:
 			//sent successfully
 		default:
-			log.Debug("Nobody is listening anymore")
+			logroot.StandardLogger().Debug("Nobody is listening anymore")
 		}
 	} else if err != nil {
-		log.Error(err)
+		logroot.StandardLogger().Error(err)
 	}
 }
 
@@ -54,7 +54,7 @@ func (ev *DoneCallback) Done(err error) {
 	if ev.Callback != nil {
 		ev.Callback(err)
 	} else if err != nil {
-		log.Error(err)
+		logroot.StandardLogger().Error(err)
 	}
 }
 
@@ -80,7 +80,7 @@ func collectDoneEvents(partialDone, done chan error, evCount int) {
 				lastError = doneEv
 			}
 			if numDone >= evCount {
-				log.Debug("TX Done - all events callbacks received")
+				logroot.StandardLogger().Debug("TX Done - all events callbacks received")
 				break
 			}
 		}

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	govppapi "git.fd.io/govpp.git/api"
 	log "github.com/ligato/cn-infra/logging/logrus"
-	"github.com/ligato/cn-infra/utils/safeclose"
 	l2ba "github.com/ligato/vpp-agent/plugins/defaultplugins/l2plugin/bin_api/l2"
 	"strconv"
 	"strings"
@@ -53,7 +52,7 @@ type L2FibVppCalls struct {
 // Add creates L2 FIB table entry
 func (fib *L2FibVppCalls) Add(mac string, bdID uint32, ifIdx uint32, bvi bool, static bool,
 	callback func(error)) error {
-	log.Debug("Adding L2 FIB table entry, mac: ", mac)
+	log.DefaultLogger().Debug("Adding L2 FIB table entry, mac: ", mac)
 
 	return fib.request(&FibLogicalReq{
 		MAC:      mac,
@@ -68,7 +67,7 @@ func (fib *L2FibVppCalls) Add(mac string, bdID uint32, ifIdx uint32, bvi bool, s
 
 // Delete removes existing L2 FIB table entry
 func (fib *L2FibVppCalls) Delete(mac string, bdID uint32, ifIdx uint32, callback func(error)) error {
-	log.Debug("Removing L2 fib table entry, mac: ", mac)
+	log.DefaultLogger().Debug("Removing L2 fib table entry, mac: ", mac)
 
 	return fib.request(&FibLogicalReq{
 		MAC:      mac,
@@ -82,10 +81,10 @@ func (fib *L2FibVppCalls) Delete(mac string, bdID uint32, ifIdx uint32, callback
 func (fib *L2FibVppCalls) request(logicalReq *FibLogicalReq) error {
 	// Convert MAC address
 	macHex := strings.Replace(logicalReq.MAC, ":", "", -1)
-	macHex = (macHex + "0000") // EUI-48 correction
+	macHex = macHex + "0000" // EUI-48 correction
 	macInt, errMac := strconv.ParseUint(macHex, 16, 64)
 	if errMac != nil {
-		log.Debug(errMac)
+		log.DefaultLogger().Debug(errMac)
 	}
 
 	req := &l2ba.L2fibAddDel{}
@@ -105,7 +104,7 @@ func (fib *L2FibVppCalls) request(logicalReq *FibLogicalReq) error {
 		Message: req,
 	}
 
-	log.WithFields(log.Fields{"Mac": req.Mac, "BD index": req.BdID}).Debug("Static fib entry added.")
+	log.DefaultLogger().WithFields(log.Fields{"Mac": req.Mac, "BD index": req.BdID}).Debug("Static fib entry added/deleted.")
 	return nil
 }
 
@@ -113,10 +112,10 @@ func (fib *L2FibVppCalls) request(logicalReq *FibLogicalReq) error {
 func (fib *L2FibVppCalls) WatchFIBReplies() {
 	for {
 		vppReply := <-fib.vppChan.ReplyChan
-		log.Debug("VPP FIB Reply ", vppReply)
+		log.DefaultLogger().Debug("VPP FIB Reply ", vppReply)
 
 		if vppReply.LastReplyReceived {
-			log.Debug("Ping received")
+			log.DefaultLogger().Debug("Ping received")
 			//TODO check with Rasto
 			//ERRO[0001] no reply received within the timeout period 1s
 			// loc="vppcalls/dump_vppcalls.go(70)" tag=00000000 D
@@ -124,13 +123,13 @@ func (fib *L2FibVppCalls) WatchFIBReplies() {
 		}
 
 		if fib.waitingForReply.Len() == 0 {
-			log.WithField("MessageID", vppReply.MessageID). //TODO WithField("err", vppReply.Error).
-									Error("Unexpected message ", vppReply)
+			log.DefaultLogger().WithField("MessageID", vppReply.MessageID). //TODO WithField("err", vppReply.Error).
+											Error("Unexpected message ", vppReply)
 			continue
 		}
 
 		logicalReq := fib.waitingForReply.Remove(fib.waitingForReply.Front()).(*FibLogicalReq)
-		log.WithField("Mac", logicalReq.MAC).Debug("VPP FIB Reply ", vppReply)
+		log.DefaultLogger().WithField("Mac", logicalReq.MAC).Debug("VPP FIB Reply ", vppReply)
 
 		if vppReply.Error != nil {
 			logicalReq.callback(vppReply.Error)
@@ -138,18 +137,13 @@ func (fib *L2FibVppCalls) WatchFIBReplies() {
 			reply := &l2ba.L2fibAddDelReply{}
 			err := fib.vppChan.MsgDecoder.DecodeMsg(vppReply.Data, reply)
 			if err != nil || 0 != reply.Retval {
-				err = fmt.Errorf("Adding/del Static fib entry returned %d", reply.Retval)
+				err = fmt.Errorf("adding/del Static fib entry returned %d", reply.Retval)
 				logicalReq.callback(err)
 			} else {
 				logicalReq.callback(nil)
 			}
 		}
 	}
-}
-
-// Close vpp channel
-func (fib *L2FibVppCalls) Close() error {
-	return safeclose.Close(fib.vppChan)
 }
 
 // Parse true=1 false=0

@@ -30,13 +30,13 @@ import (
 
 	"github.com/ligato/cn-infra/logging"
 	log "github.com/ligato/cn-infra/logging/logrus"
-	"github.com/ligato/vpp-agent/flavours/linuxlocal"
+	"github.com/ligato/vpp-agent/flavors/local"
 )
 
 // init sets the default logging level
 func init() {
-	log.SetOutput(os.Stdout)
-	log.SetLevel(logging.DebugLevel)
+	log.DefaultLogger().SetOutput(os.Stdout)
+	log.DefaultLogger().SetLevel(logging.DebugLevel)
 }
 
 /********
@@ -48,11 +48,11 @@ func main() {
 	// Init close channel to stop the example
 	closeChannel := make(chan struct{}, 1)
 
-	flavour := linuxlocal.Flavour{}
+	flavor := local.FlavorVppLocal{}
 	// Example plugin and dependencies
 	examplePlugin := &core.NamedPlugin{PluginName: PluginID, Plugin: &ExamplePlugin{}}
 	// Create new agent
-	agentVar := core.NewAgent(log.StandardLogger(), 15*time.Second, append(flavour.Plugins(), examplePlugin)...)
+	agentVar := core.NewAgent(log.DefaultLogger(), 15*time.Second, append(flavor.Plugins(), examplePlugin)...)
 
 	// End when the localhost example is finished
 	go closeExample("localhost example finished", closeChannel)
@@ -63,7 +63,7 @@ func main() {
 // Stop the agent with desired info message
 func closeExample(message string, closeChannel chan struct{}) {
 	time.Sleep(40 * time.Second)
-	log.Info(message)
+	log.DefaultLogger().Info(message)
 	closeChannel <- struct{}{}
 }
 
@@ -92,7 +92,7 @@ func (plugin *ExamplePlugin) Init() error {
 	plugin.wg.Add(1)
 	go plugin.reconfigureLinuxAndVPP(ctx)
 
-	log.Info("Initialization of the example plugin has completed")
+	log.DefaultLogger().Info("Initialization of the example plugin has completed")
 	return nil
 }
 
@@ -101,7 +101,7 @@ func (plugin *ExamplePlugin) Close() error {
 	plugin.cancel()
 	plugin.wg.Wait()
 
-	log.Info("Closed example plugin")
+	log.DefaultLogger().Info("Closed example plugin")
 	return nil
 }
 
@@ -114,9 +114,9 @@ func (plugin *ExamplePlugin) resyncLinuxAndVpp() {
 		VppInterface(&tap1).
 		Send().ReceiveReply()
 	if err != nil {
-		log.Errorf("Failed to apply initial Linux&VPP configuration: %v", err)
+		log.DefaultLogger().Errorf("Failed to apply initial Linux&VPP configuration: %v", err)
 	} else {
-		log.Info("Successfully applied initial Linux&VPP configuration")
+		log.DefaultLogger().Info("Successfully applied initial Linux&VPP configuration")
 	}
 }
 
@@ -127,23 +127,23 @@ func (plugin *ExamplePlugin) reconfigureLinuxAndVPP(ctx context.Context) {
 		// simulate configuration change exactly 20seconds after resync
 		err := localclient.DataChangeRequest(PluginID).
 			Put().
-			LinuxInterface(&veth11Ns1).     /* move veth11 into the namespace "ns1" */
+			LinuxInterface(&veth11Ns1). /* move veth11 into the namespace "ns1" */
 			LinuxInterface(&veth12WithMtu). /* reconfigure veth12 -- explicitly set Mtu to 1000 */
-			LinuxInterface(&veth21Ns2).     /* create veth21-veth22 pair, put veth21 into the namespace "ns2" */
-			LinuxInterface(&veth22).        /* enable veth22, keep default configuration */
-			VppInterface(&afpacket2).       /* create afpacket2 interface and attach it to veth2 */
-			BD(&BDAfpackets).               /* put afpacket1 and afpacket2 into the same bridge domain */
+			LinuxInterface(&veth21Ns2). /* create veth21-veth22 pair, put veth21 into the namespace "ns2" */
+			LinuxInterface(&veth22). /* enable veth22, keep default configuration */
+			VppInterface(&afpacket2). /* create afpacket2 interface and attach it to veth2 */
+			BD(&BDAfpackets). /* put afpacket1 and afpacket2 into the same bridge domain */
 			Delete().
 			VppInterface(tap1.Name). /* remove the tap interface */
 			Send().ReceiveReply()
 		if err != nil {
-			log.Errorf("Failed to reconfigure Linux&VPP: %v", err)
+			log.DefaultLogger().Errorf("Failed to reconfigure Linux&VPP: %v", err)
 		} else {
-			log.Info("Successfully reconfigured Linux&VPP")
+			log.DefaultLogger().Info("Successfully reconfigured Linux&VPP")
 		}
 	case <-ctx.Done():
 		// cancel the scheduled re-configuration
-		log.Info("Planned Linux&VPP re-configuration was canceled")
+		log.DefaultLogger().Info("Planned Linux&VPP re-configuration was canceled")
 	}
 	plugin.wg.Done()
 }
@@ -316,10 +316,10 @@ var (
 		MacAge:              0, /* means disable aging */
 		Interfaces: []*vpp_l2.BridgeDomains_BridgeDomain_Interfaces{
 			{
-				Name: "afpacket1",
+				Name:                    "afpacket1",
 				BridgedVirtualInterface: false,
 			}, {
-				Name: "afpacket2",
+				Name:                    "afpacket2",
 				BridgedVirtualInterface: false,
 			},
 		},

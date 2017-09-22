@@ -16,10 +16,11 @@ package client
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/Shopify/sarama"
 	"github.com/golang/protobuf/proto"
 	"github.com/ligato/cn-infra/db/keyval"
-	"time"
 )
 
 // Encoder defines an interface that is used as argument of producer functions.
@@ -37,12 +38,27 @@ type ConsumerMessage struct {
 	Timestamp  time.Time
 }
 
-// GetKey returns key associated with the message
+// GetTopic returns the topic associated with the message
+func (cm *ConsumerMessage) GetTopic() string {
+	return cm.Topic
+}
+
+// GetPartition returns the partition associated with the message
+func (cm *ConsumerMessage) GetPartition() int32 {
+	return cm.Partition
+}
+
+// GetOffset returns the offset associated with the message
+func (cm *ConsumerMessage) GetOffset() int64 {
+	return cm.Offset
+}
+
+// GetKey returns the key associated with the message.
 func (cm *ConsumerMessage) GetKey() string {
 	return string(cm.Key)
 }
 
-// GetValue return value associated with the message
+// GetValue returns the value associated with the message.
 func (cm *ConsumerMessage) GetValue() []byte {
 	return cm.Value
 }
@@ -59,12 +75,27 @@ func NewProtoConsumerMessage(msg *ConsumerMessage, serializer keyval.Serializer)
 	return &ProtoConsumerMessage{msg, serializer}
 }
 
-// GetKey returns key associated with the message
+// GetTopic returns the topic associated with the message.
+func (cm *ProtoConsumerMessage) GetTopic() string {
+	return cm.Topic
+}
+
+// GetPartition returns the partition associated with the message.
+func (cm *ProtoConsumerMessage) GetPartition() int32 {
+	return cm.Partition
+}
+
+// GetOffset returns the offset associated with the message.
+func (cm *ProtoConsumerMessage) GetOffset() int64 {
+	return cm.Offset
+}
+
+// GetKey returns the key associated with the message.
 func (cm *ProtoConsumerMessage) GetKey() string {
 	return string(cm.Key)
 }
 
-// GetValue return value associated with the message
+// GetValue returns the value associated with the message.
 func (cm *ProtoConsumerMessage) GetValue(msg proto.Message) error {
 	err := cm.serializer.Unmarshal(cm.ConsumerMessage.GetValue(), msg)
 	if err != nil {
@@ -101,24 +132,36 @@ type ProducerMessage struct {
 	Partition int32
 }
 
-// ProducerError is the type of error generated when the producer fails to deliver a message.
-// It contains the original ProducerMessage as well as the actual error value.
-type ProducerError struct {
-	Msg *ProducerMessage
-	Err error
+// GetTopic returns the topic associated with the message.
+func (pm *ProducerMessage) GetTopic() string {
+	return pm.Topic
 }
 
-func (ref *ProducerError) Error() string {
-	return ref.Err.Error()
+// GetPartition returns the partition associated with the message.
+func (pm *ProducerMessage) GetPartition() int32 {
+	return pm.Partition
 }
 
-func (ref *ProducerError) String() string {
-	return fmt.Sprintf("ProducerError: %s, error: %v\n", ref.Msg, ref.Err)
+// GetOffset returns the offset associated with the message.
+func (pm *ProducerMessage) GetOffset() int64 {
+	return pm.Offset
 }
 
-func (ref *ProducerMessage) String() string {
+// GetKey returns the key associated with the message.
+func (pm *ProducerMessage) GetKey() string {
+	key, _ := pm.Key.Encode()
+	return string(key)
+}
+
+// GetValue returns the content of the message.
+func (pm *ProducerMessage) GetValue() []byte {
+	val, _ := pm.Value.Encode()
+	return val
+}
+
+func (pm *ProducerMessage) String() string {
 	var meta string
-	switch t := ref.Metadata.(type) {
+	switch t := pm.Metadata.(type) {
 	default:
 		meta = fmt.Sprintf("unexpected type %T", t) // %T prints whatever type t has
 	case string:
@@ -137,8 +180,69 @@ func (ref *ProducerMessage) String() string {
 		meta = fmt.Sprintf("%d", *t) // t has type *int
 	}
 
-	key, _ := ref.Key.Encode()
-	val, _ := ref.Value.Encode()
+	key, _ := pm.Key.Encode()
+	val, _ := pm.Value.Encode()
 
-	return fmt.Sprintf("ProducerMessage - Topic: %s, Key: %s, Value: %s, Meta: %v, Offset: %d, Partition: %d\n", ref.Topic, string(key), string(val), meta, ref.Offset, ref.Partition)
+	return fmt.Sprintf("ProducerMessage - Topic: %s, Key: %s, Value: %s, Meta: %v, Offset: %d, Partition: %d\n", pm.Topic, string(key), string(val), meta, pm.Offset, pm.Partition)
+}
+
+// ProducerError is the type of error generated when the producer fails to deliver a message.
+// It contains the original ProducerMessage as well as the actual error value.
+type ProducerError struct {
+	*ProducerMessage
+	Err error
+}
+
+func (ref *ProducerError) Error() error {
+	return ref.Err
+}
+
+func (ref *ProducerError) String() string {
+	return fmt.Sprintf("ProducerError: %s, error: %v\n", ref.ProducerMessage, ref.Err.Error())
+}
+
+// ProtoProducerMessage is wrapper of a producer message that simplify work with proto-modelled data.
+type ProtoProducerMessage struct {
+	*ProducerMessage
+	Serializer keyval.Serializer
+}
+
+// GetTopic returns the topic associated with the message.
+func (ppm *ProtoProducerMessage) GetTopic() string {
+	return ppm.Topic
+}
+
+// GetPartition returns the partition associated with the message.
+func (ppm *ProtoProducerMessage) GetPartition() int32 {
+	return ppm.Partition
+}
+
+// GetOffset returns the offset associated with the message.
+func (ppm *ProtoProducerMessage) GetOffset() int64 {
+	return ppm.Offset
+}
+
+// GetKey returns the key associated with the message.
+func (ppm *ProtoProducerMessage) GetKey() string {
+	key, _ := ppm.Key.Encode()
+	return string(key)
+}
+
+// GetValue unmarshalls the content of the msg into provided structure.
+func (ppm *ProtoProducerMessage) GetValue(msg proto.Message) error {
+	err := ppm.Serializer.Unmarshal(ppm.ProducerMessage.GetValue(), msg)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ProtoProducerMessageErr represents a proto-modelled message that was not published successfully.
+type ProtoProducerMessageErr struct {
+	*ProtoProducerMessage
+	Err error
+}
+
+func (pme *ProtoProducerMessageErr) Error() error {
+	return pme.Err
 }

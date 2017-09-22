@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Program vpp-agent-ctl demonstrates usage of the plugins of the VNF agent.
+// package vpp-agent-ctl implements the vpp-agent-ctl test tool for testing
+// of VPP Agent plugins. In addition to testing, the vpp-agent-ctl tool can
+// be used to demonstrate the usage of VPP Agent plugins and their APIs.
 package main
 
 import (
@@ -26,13 +28,17 @@ import (
 
 	"github.com/namsral/flag"
 
+	"net"
+
+	"github.com/ligato/cn-infra/config"
+	"github.com/ligato/cn-infra/datasync"
 	"github.com/ligato/cn-infra/db/keyval"
 	"github.com/ligato/cn-infra/db/keyval/etcdv3"
 	"github.com/ligato/cn-infra/db/keyval/kvproto"
 	"github.com/ligato/cn-infra/logging"
 	"github.com/ligato/cn-infra/logging/logroot"
+	"github.com/ligato/cn-infra/logging/logrus"
 	"github.com/ligato/cn-infra/servicelabel"
-	"github.com/ligato/cn-infra/utils/config"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/aclplugin/model/acl"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/bfd"
 	"github.com/ligato/vpp-agent/plugins/defaultplugins/ifplugin/model/interfaces"
@@ -47,7 +53,7 @@ var (
 )
 
 func main() {
-	log = logroot.Logger()
+	log = logroot.StandardLogger()
 	log.SetLevel(logging.InfoLevel)
 	flag.CommandLine.ParseEnv(os.Environ())
 
@@ -119,7 +125,7 @@ func main() {
 		case "-cr":
 			createRoute(db)
 		case "-dr":
-			deleteRoute(db)
+			deleteRoute(db, "10.1.1.3/32", "")
 		case "-txn":
 			txn(db)
 		case "-dtxn":
@@ -131,7 +137,7 @@ func main() {
 		case "-aft":
 			addStaticFibTableEntry(db, bridgeDomain1, ifName1)
 		case "-dft":
-			deleteStaticFibTableEntry(db)
+			deleteStaticFibTableEntry(db, bridgeDomain1)
 		case "-aat":
 			addArpTableEntry(db, bridgeDomain1)
 		case "-cxc":
@@ -199,6 +205,7 @@ func createACL(db keyval.ProtoBroker) {
 	accessList.Acl[0].Rules[0].Actions.AclAction = acl.AclAction_PERMIT
 	accessList.Acl[0].Rules[0].Matches = new(acl.AccessLists_Acl_Rule_Matches)
 
+	//// Actions
 	//accessList.Acl[0].Rules[1] = new(acl.AccessLists_Acl_Rule)
 	//accessList.Acl[0].Rules[1].Actions = new(acl.AccessLists_Acl_Rule_Actions)
 	//accessList.Acl[0].Rules[1].Actions.AclAction = acl.AclAction_PERMIT
@@ -218,10 +225,28 @@ func createACL(db keyval.ProtoBroker) {
 	//// Ipv6Rule
 	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Ip)
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.SourceNetwork = "12001:0db8:0a0b:12f0:0000:0000:0000:0000"
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.SourceNetwork = "1201:0db8:0a0b:12f0:0000:0000:0000:0000"
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.DestinationNetwork = "5064:ff9b:0000:0000:0000:0000:0000:0000"
+	//
+	//// Ipv4Rule with empty destination address
+	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Ip)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.SourceNetwork = "192.168.1.2"
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.DestinationNetwork = ""
+	//
+	//// Ipv6Rule with empty source address
+	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Ip)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.SourceNetwork = ""
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.DestinationNetwork = "0064:ff9b:0000:0000:0000:0000:0000:0000"
 	//
-	////// Icmpv4 Rule
+	//// Ip Rule with empty source and destination addresses
+	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Ip)
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.SourceNetwork = ""
+	//accessList.Acl[0].Rules[0].Matches.IpRule.Ip.DestinationNetwork = ""
+	//
+	//// Icmpv4 Rule (comment out "...IpRule = new(...)" to include the IP layer rule definition from above)
 	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Icmp = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Icmp)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Icmp.IcmpTypeRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Icmp_IcmpTypeRange)
@@ -231,7 +256,7 @@ func createACL(db keyval.ProtoBroker) {
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Icmp.IcmpCodeRange.First = 1150
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Icmp.IcmpCodeRange.Last = 1250
 	//
-	//// Icmpv6 Rule
+	//// Icmpv6 Rule (comment out "...IpRule = new(...)" to include the IP layer rule definition from above)
 	//accessList.Acl[0].Rules[2].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
 	//accessList.Acl[0].Rules[2].Matches.IpRule.Icmp = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Icmp)
 	//accessList.Acl[0].Rules[2].Matches.IpRule.Icmp.IcmpTypeRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Icmp_IcmpTypeRange)
@@ -240,20 +265,19 @@ func createACL(db keyval.ProtoBroker) {
 	//accessList.Acl[0].Rules[2].Matches.IpRule.Icmp.IcmpCodeRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Icmp_IcmpCodeRange)
 	//accessList.Acl[0].Rules[2].Matches.IpRule.Icmp.IcmpCodeRange.First = 1150
 	//accessList.Acl[0].Rules[2].Matches.IpRule.Icmp.IcmpCodeRange.Last = 1250
-	//
-	//// Tcp Rule
+	//// Tcp Rule (comment out "...IpRule = new(...)" to include the IP layer rule definition from above)
 	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp)
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange)
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange.LowerPort = 150
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange.UpperPort = 250
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange)
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange.LowerPort = 1150
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange.UpperPort = 1250
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.TcpFlagsValue = 10
-	//accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.TcpFlagsMask = 20
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp)
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_SourcePortRange)
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange.LowerPort = 150
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.SourcePortRange.UpperPort = 250
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Tcp_DestinationPortRange)
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange.LowerPort = 1150
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.DestinationPortRange.UpperPort = 1250
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.TcpFlagsValue = 10
+	accessList.Acl[0].Rules[0].Matches.IpRule.Tcp.TcpFlagsMask = 20
 	//
-	//// Udp Rule
+	//// Udp Rule (comment out "...IpRule = new(...)" to include the IP layer rule definition from above)
 	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Udp = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Udp)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Udp.SourcePortRange = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Udp_SourcePortRange)
@@ -263,7 +287,7 @@ func createACL(db keyval.ProtoBroker) {
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Udp.DestinationPortRange.LowerPort = 1150
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Udp.DestinationPortRange.UpperPort = 1250
 	//
-	//// Other
+	//// Other (comment out "...IpRule = new(...)" to include the IP layer rule definition from above)
 	//accessList.Acl[0].Rules[0].Matches.IpRule = new(acl.AccessLists_Acl_Rule_Matches_IpRule)
 	//accessList.Acl[0].Rules[0].Matches.IpRule.Other = new(acl.AccessLists_Acl_Rule_Matches_IpRule_Other)
 	//
@@ -374,7 +398,7 @@ func etcdDump(bDB *etcdv3.BytesConnectionEtcd, key string) {
 }
 
 func etcdDel(bDB *etcdv3.BytesConnectionEtcd, key string) {
-	found, err := bDB.Delete(key, keyval.WithPrefix())
+	found, err := bDB.Delete(key, datasync.WithPrefix())
 	if err != nil {
 		log.Error(err)
 		return
@@ -387,26 +411,36 @@ func etcdDel(bDB *etcdv3.BytesConnectionEtcd, key string) {
 }
 
 func createRoute(db keyval.ProtoBroker) {
-	routes := l3.StaticRoutes{}
-	routes.Ip = make([]*l3.StaticRoutes_Ip, 1)
-	routes.Ip[0] = new(l3.StaticRoutes_Ip)
-	routes.Ip[0].Description = "Description"
-	routes.Ip[0].VrfId = 0
-	routes.Ip[0].DestinationAddress = "10.1.1.2"
-	//routes.Ip[0].DestinationAddress.IpAddressWithPrefix = "2001:db8:0:0:0:ff00:42:8329/48"
-	routes.Ip[0].NextHops = make([]*l3.StaticRoutes_Ip_NextHop, 1)
-	routes.Ip[0].NextHops[0] = new(l3.StaticRoutes_Ip_NextHop)
-	//routes.Ip[0].NextHops[0].Address = "2587:db8:0:0:0:ff00:42:8329"
-	routes.Ip[0].NextHops[0].Address = "192.168.1.5"
-	routes.Ip[0].NextHops[0].Weight = 5
+	routes := l3.StaticRoutes{
+		Route: []*l3.StaticRoutes_Route{
+			{
+				VrfId:             0,
+				DstIpAddr:         "10.1.1.3/32",
+				NextHopAddr:       "192.168.1.13",
+				Weight:            6,
+				OutgoingInterface: "tap1",
+			},
+		},
+	}
 
-	path := l3.RouteKey()
-	db.Put(path, &routes)
-	log.WithField("path", path).Debug("Adding route")
+	_, dstNetAddr, err := net.ParseCIDR(routes.Route[0].DstIpAddr)
+	if err != nil {
+		log.Errorf("Error parsing address %v", routes.Route[0].DstIpAddr)
+		return
+	}
+
+	key := l3.RouteKey(routes.Route[0].VrfId, dstNetAddr, routes.Route[0].NextHopAddr)
+	db.Put(key, routes.Route[0])
+	log.Printf("Adding route %v", key)
 }
 
-func deleteRoute(db keyval.ProtoBroker) {
-	path := l3.RouteKey()
+func deleteRoute(db keyval.ProtoBroker, routeDstIP string, routeNhIP string) {
+	_, dstNetAddr, err := net.ParseCIDR(routeDstIP)
+	if err != nil {
+		log.Errorf("Error parsing address %v", routeDstIP)
+		return
+	}
+	path := l3.RouteKey(0, dstNetAddr, "192.168.1.13")
 	db.Delete(path)
 	log.WithField("path", path).Debug("Removing route")
 }
@@ -484,7 +518,7 @@ func create(db keyval.ProtoBroker, ifname1 string, ipAddr string) {
 	ifs.Interface[0].Enabled = true
 	//ifs.Interface[0].PhysAddress = "06:9e:df:66:54:41"
 	ifs.Interface[0].Enabled = true
-	ifs.Interface[0].Mtu = 1500
+	//ifs.Interface[0].Mtu = 555
 	ifs.Interface[0].IpAddresses = make([]string, 1)
 	ifs.Interface[0].IpAddresses[0] = "10.1.1.2"
 	//ifs.Interface[0].IpAddresses[0] = "2002:db8:0:0:0:ff00:42:8329"
@@ -534,12 +568,12 @@ func createLoopback(db keyval.ProtoBroker, ifname string, physAddr string, ipv4A
 	ifs.Interface[0].PhysAddress = physAddr
 
 	ifs.Interface[0].Enabled = true
-	ifs.Interface[0].Mtu = 1500
+	ifs.Interface[0].Mtu = 1478
 	ifs.Interface[0].IpAddresses = make([]string, 1)
 	ifs.Interface[0].IpAddresses[0] = ipv4Addr
 
 	ifs.Interface[0].Enabled = true
-	ifs.Interface[0].Mtu = 1500
+	ifs.Interface[0].Mtu = 1478
 	ifs.Interface[0].IpAddresses = make([]string, 1)
 	ifs.Interface[0].IpAddresses[0] = ipv6Addr
 
@@ -620,7 +654,7 @@ func createMemif(db keyval.ProtoBroker, ifname string, ipAddr string, master boo
 			Master:         master,
 			SocketFilename: "/tmp/memif1.sock",
 		},
-		Mtu:         1500,
+		Mtu:         1478,
 		IpAddresses: []string{ipAddr},
 	}
 	log.Println(key, iface)
@@ -671,7 +705,10 @@ func createEtcdClient() (*etcdv3.BytesConnectionEtcd, keyval.ProtoBroker) {
 		log.Fatal(err)
 	}
 
-	bDB, err := etcdv3.NewEtcdConnectionWithBytes(*etcdConfig, log)
+	etcdLogger := logrus.NewLogger("etcdLogger")
+	etcdLogger.SetLevel(logging.WarnLevel)
+
+	bDB, err := etcdv3.NewEtcdConnectionWithBytes(*etcdConfig, etcdLogger)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -739,18 +776,19 @@ func addStaticFibTableEntry(db keyval.ProtoBroker, bdName string, iface string) 
 
 	log.Println(fibTable)
 
-	db.Put(l2.FibKey(fibTable.FibTableEntry[0].PhysAddress), fibTable.FibTableEntry[0])
+	db.Put(l2.FibKey(fibTable.FibTableEntry[0].BridgeDomain, fibTable.FibTableEntry[0].PhysAddress), fibTable.FibTableEntry[0])
 }
 
-func deleteStaticFibTableEntry(db keyval.ProtoBroker) {
+func deleteStaticFibTableEntry(db keyval.ProtoBroker, bdName string) {
 	fibTable := l2.FibTableEntries{}
 	fibTable.FibTableEntry = make([]*l2.FibTableEntries_FibTableEntry, 1)
 	fibTable.FibTableEntry[0] = new(l2.FibTableEntries_FibTableEntry)
 	fibTable.FibTableEntry[0].PhysAddress = "aa:65:f1:59:8E:BC"
+	fibTable.FibTableEntry[0].BridgeDomain = bdName
 
 	log.Println(fibTable)
 
-	db.Delete(l2.FibKey(fibTable.FibTableEntry[0].PhysAddress))
+	db.Delete(l2.FibKey(fibTable.FibTableEntry[0].BridgeDomain, fibTable.FibTableEntry[0].PhysAddress))
 }
 
 func createL2xConnect(db keyval.ProtoBroker, ifnameRx string, ifnameTx string) {

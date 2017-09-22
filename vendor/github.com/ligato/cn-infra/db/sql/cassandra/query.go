@@ -16,12 +16,12 @@ package cassandra
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"github.com/ligato/cn-infra/db/sql"
-	"github.com/ligato/cn-infra/utils/structs"
 	r "reflect"
 	"strings"
+
+	"github.com/ligato/cn-infra/db/sql"
+	"github.com/ligato/cn-infra/utils/structs"
 )
 
 // PutExpToString converts expression to string & slice of bindings
@@ -31,12 +31,13 @@ func PutExpToString(whereCondition sql.Expression, entity interface{}) (sqlStr s
 	whereCondtionStr := &toStringVisitor{entity: entity}
 	whereCondition.Accept(whereCondtionStr)
 
-	statement, _, err := updateSetExpToString(r.Indirect(r.ValueOf(entity)).Type().Name(), /*TODO extract method / make customizable*/
+	statement, _, err := updateSetExpToString(sql.EntityTableName(entity), /*TODO extract method / make customizable*/
 		entity /*, TODO TTL*/)
 	if err != nil {
 		return "", nil, err
 	}
-	bindings = structFieldPtrs(entity)
+
+	_, bindings = structs.ListExportedFieldsPtrs(entity, cqlExported, filterOutPK)
 	whereBinding := whereCondtionStr.Binding()
 	if whereBinding != nil {
 		bindings = append(bindings, whereBinding...)
@@ -61,7 +62,7 @@ func SelectExpToString(fromWhere sql.Expression) (sqlStr string, bindings []inte
 	}
 	fromWhereBindings := fromWhereStr.Binding()
 
-	return "SELECT " + fieldsStr + " " + fromWhereStr.String(), fromWhereBindings, nil
+	return "SELECT " + fieldsStr + fromWhereStr.String(), fromWhereBindings, nil
 }
 
 // ExpToString converts expression to string & slice of bindings
@@ -98,7 +99,7 @@ func (visitor *toStringVisitor) VisitPrefixedExp(exp *sql.PrefixedExp) {
 	visitor.generated.WriteString(exp.Prefix)
 	if exp.Prefix == "FROM" {
 		visitor.generated.WriteString(" ")
-		visitor.generated.WriteString(entityName(visitor.entity))
+		visitor.generated.WriteString(sql.EntityTableName(visitor.entity))
 	}
 	if exp.AfterPrefix != nil {
 		exp.AfterPrefix.Accept(visitor)
@@ -113,23 +114,20 @@ func (visitor *toStringVisitor) VisitPrefixedExp(exp *sql.PrefixedExp) {
 		}
 	}
 }
-func entityName(entity interface{}) string {
-	return r.Indirect(r.ValueOf(entity)).Type().Name()
-}
 
 // VisitPrefixedExp generates part of SQL expression
 func (visitor *toStringVisitor) VisitFieldExpression(exp *sql.FieldExpression) {
 	if visitor.entity == nil {
-		visitor.lastError = errors.New("not found entity")
+		visitor.lastError = ErrMissingVisitorEntity
 	} else {
 		field, found := structs.FindField(exp.PointerToAField, visitor.entity)
 		if !found {
-			visitor.lastError = errors.New("not found field in entity")
+			visitor.lastError = ErrMissingEntityField
 			return
 		}
 		fieldName, found := fieldName(field)
 		if !found {
-			visitor.lastError = errors.New("not exported field in entity")
+			visitor.lastError = ErrUnexportedEntityField
 			return
 		}
 		visitor.generated.WriteString(" ")
@@ -141,8 +139,20 @@ func (visitor *toStringVisitor) VisitFieldExpression(exp *sql.FieldExpression) {
 	}
 }
 
-// fieldName checks the cql tag in StructField and parses the field name
-func fieldName(field *r.StructField) (name string, exported bool) {
+// cqlExported checks the cql tag in StructField and parses the field name
+func cqlExported(field *r.StructField) (exported bool) {
+	cql := field.Tag.Get("cql")
+	if len(cql) > 0 {
+		if cql == "-" {
+			return false
+		}
+		return true
+	}
+	return true
+}
+
+// cqlExportedWithFieldName checks the cql tag in StructField and parses the field name
+func cqlExportedWithFieldName(field *r.StructField) (fieldName string, exported bool) {
 	cql := field.Tag.Get("cql")
 	if len(cql) > 0 {
 		if cql == "-" {
@@ -153,19 +163,44 @@ func fieldName(field *r.StructField) (name string, exported bool) {
 	return field.Name, true
 }
 
+// isFieldPK checks the pk tag in StructField and parses the field name
+func isFieldPK(field *r.StructField) (isPK bool) {
+	result := false
+	pk := field.Tag.Get("pk")
+	if len(pk) > 0 {
+		result = true
+	}
+	return result
+}
+
+// filterOutPK used to filter out primary key from update statements only
+func filterOutPK(field *r.StructField) (filterPK bool) {
+	return !isFieldPK(field)
+}
+
+func fieldName(field *r.StructField) (name string, exported bool) {
+	structExported := structs.FieldExported(field)
+	if !structExported {
+		return field.Name, structExported
+	}
+
+	return cqlExportedWithFieldName(field)
+}
+
 // selectFields generates comma separated field names string
 func selectFields(val interface{} /*, opts Options*/) (statement string) {
-	fields := structs.ListExportedFields(val)
+	fields := structs.ListExportedFields(val, cqlExported)
 	ret := bytes.Buffer{}
 	first := true
 	for _, field := range fields {
-		if first {
-			first = false
-		} else {
-			ret.WriteString(", ")
-		}
 		fieldName, exported := fieldName(field)
 		if exported {
+			if first {
+				first = false
+			} else {
+				ret.WriteString(", ")
+			}
+
 			ret.WriteString(fieldName)
 		}
 	}
@@ -174,8 +209,9 @@ func selectFields(val interface{} /*, opts Options*/) (statement string) {
 }
 
 // SliceOfFields generates slice of translated (cql tag) field names
-func sliceOfFields(val interface{} /*, opts Options*/) (fieldNames []string) {
-	fields := structs.ListExportedFields(val)
+// used in creating update statement only
+func sliceOfFieldNames(val interface{} /*, opts Options*/) (fieldNames []string) {
+	fields := structs.ListExportedFields(val, filterOutPK)
 	fieldNames = []string{}
 	for _, field := range fields {
 		fieldName, exported := fieldName(field)
@@ -187,9 +223,10 @@ func sliceOfFields(val interface{} /*, opts Options*/) (fieldNames []string) {
 	return fieldNames
 }
 
-// SliceOfFieldsWithVals generates slice of translated (cql tag) field names with field values
-func SliceOfFieldsWithVals(val interface{} /*, opts Options*/) (fieldNames []string, vals []interface{}) {
-	fields, vals := structs.ListExportedFieldsWithVals(val)
+// SliceOfFieldsWithValPtrs generates slice of translated (cql tag) field names with field values
+// used for unit testing purposes only - list_values test
+func SliceOfFieldsWithValPtrs(val interface{} /*, opts Options*/) (fieldNames []string, vals []interface{}) {
+	fields, vals := structs.ListExportedFieldsPtrs(val)
 
 	fieldNames = []string{}
 	for _, field := range fields {
@@ -207,7 +244,7 @@ func SliceOfFieldsWithVals(val interface{} /*, opts Options*/) (fieldNames []str
 func updateSetExpToString(cfName string, val interface{} /*, opts Options*/) (
 	statement string, fields []string, err error) {
 
-	fields = sliceOfFields(val)
+	fields = sliceOfFieldNames(val)
 
 	statement = updateStatement(cfName, fields)
 	return statement, fields, nil

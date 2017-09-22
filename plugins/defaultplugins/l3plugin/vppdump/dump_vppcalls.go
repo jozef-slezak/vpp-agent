@@ -33,14 +33,14 @@ type StaticRoutes struct {
 // NOTE: NextHops in StaticRoutes_Ip is overridden by the local NextHops member.
 type StaticRouteIP struct {
 	NextHops []*NextHop
-	l3nb.StaticRoutes_Ip
+	l3nb.StaticRoutes_Route
 }
 
 // NextHop is the wrapper structure for the bridge domain interface northbound API structure.
 type NextHop struct {
 	OutgoingInterfaceSwIfIdx    uint32
 	OutgoingInterfaceConfigured bool
-	l3nb.StaticRoutes_Ip_NextHop
+	l3nb.StaticRoutes_Route_NextHops
 }
 
 // DumpStaticRoutes dumps l3 routes from VPP and fills them into the provided static route map.
@@ -58,7 +58,7 @@ func DumpStaticRoutes(vppChan *govppapi.Channel) (map[uint32]*StaticRoutes, erro
 			break // break out of the loop
 		}
 		if err != nil {
-			log.Error(err)
+			log.DefaultLogger().Error(err)
 			return nil, err
 		}
 		dumpStaticRouteDetails(routes, fibDetails.TableID, fibDetails.Address, fibDetails.AddressLength, fibDetails.Path, true)
@@ -73,7 +73,7 @@ func DumpStaticRoutes(vppChan *govppapi.Channel) (map[uint32]*StaticRoutes, erro
 			break // break out of the loop
 		}
 		if err != nil {
-			log.Error(err)
+			log.DefaultLogger().Error(err)
 			return nil, err
 		}
 		dumpStaticRouteDetails(routes, fibDetails.TableID, fibDetails.Address, fibDetails.AddressLength, fibDetails.Path, true)
@@ -99,7 +99,7 @@ func dumpStaticRouteDetails(routes map[uint32]*StaticRoutes, tableID uint32,
 		}
 	}
 	route := &StaticRouteIP{
-		StaticRoutes_Ip: l3nb.StaticRoutes_Ip{
+		StaticRoutes_Route: l3nb.StaticRoutes_Route{
 			VrfId:              tableID,
 			DestinationAddress: ipAddr,
 		},
@@ -118,9 +118,10 @@ func dumpStaticRouteDetails(routes map[uint32]*StaticRoutes, tableID uint32,
 		route.NextHops = append(route.NextHops, &NextHop{
 			OutgoingInterfaceSwIfIdx:    path.SwIfIndex,
 			OutgoingInterfaceConfigured: path.SwIfIndex < ^uint32(0),
-			StaticRoutes_Ip_NextHop: l3nb.StaticRoutes_Ip_NextHop{
-				Address: nextHopAddr,
-				Weight:  path.Weight,
+			StaticRoutes_Route_NextHops: l3nb.StaticRoutes_Route_NextHops{
+				Address:    nextHopAddr,
+				Weight:     path.Weight,
+				Preference: uint32(path.Preference),
 			},
 		})
 	}

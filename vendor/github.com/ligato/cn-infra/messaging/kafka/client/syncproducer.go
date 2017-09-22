@@ -18,9 +18,10 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"sync"
+
 	"github.com/Shopify/sarama"
 	"github.com/ligato/cn-infra/logging"
-	"sync"
 )
 
 // SyncProducer allows to publish messages to kafka using synchronous API.
@@ -139,27 +140,23 @@ func (ref *SyncProducer) SendMsgByte(topic string, key []byte, msg []byte) (*Pro
 
 	if key == nil || len(key) == 0 {
 		md5Sum := fmt.Sprintf("%x", md5.Sum(msg))
-		return ref.SendMsg(topic, sarama.ByteEncoder(md5Sum), sarama.ByteEncoder(msg))
+		return ref.SendMsg(topic, ref.Partition, sarama.ByteEncoder(md5Sum), sarama.ByteEncoder(msg))
 	}
-	return ref.SendMsg(topic, sarama.ByteEncoder(key), sarama.ByteEncoder(msg))
+	return ref.SendMsg(topic, ref.Partition, sarama.ByteEncoder(key), sarama.ByteEncoder(msg))
 }
 
 // SendMsg sends a message to Kafka
-func (ref *SyncProducer) SendMsg(topic string, key sarama.Encoder, msg sarama.Encoder) (*ProducerMessage, error) {
+func (ref *SyncProducer) SendMsg(topic string, partition int32, key sarama.Encoder, msg sarama.Encoder) (*ProducerMessage, error) {
 	if msg == nil {
 		err := errors.New("nil message can not be sent")
 		ref.Error(err)
 		return nil, err
 	}
 	message := &sarama.ProducerMessage{
-		Topic: topic,
-		Value: msg,
-		Key:   key,
-	}
-
-	// manual partition
-	if ref.Partition > -1 {
-		message.Partition = ref.Partition
+		Topic:     topic,
+		Partition: partition,
+		Value:     msg,
+		Key:       key,
 	}
 
 	partition, offset, err := ref.Producer.SendMessage(message)
